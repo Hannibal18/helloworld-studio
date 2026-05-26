@@ -16,6 +16,14 @@ import {
   schemasByCategory, loadAllSchemas, saveSchema,
   type FieldDef, type FieldType, type SchemaCat,
 } from './schema';
+import {
+  isCharacterEntryPath, isZipEntryPath, charBaseName,
+  thumbnailPathFor, animPathFor, originalZipPathFor,
+  metaUrlForEntry, entryPathForSidecar, zipFolderPrefix,
+  metaFilenameFor, metaFilenameForLegacy, metaFilenameForZip,
+  animFilenameFor, originalZipFilenameFor, thumbnailFilenameFor,
+  type CharFormat,
+} from './paths';
 
 type Category = 'maps' | 'characters' | 'bgm';
 const EXT_BY_CAT: Record<Category, string[]> = {
@@ -67,6 +75,11 @@ let selectedMap: BlobItem | null = null;
 let selectedAudio: BlobItem | null = null;
 let playingAction: string | null = null;
 let playRafId = 0;
+// 현재 detail 패널이 마지막으로 폼을 reset 한 대상 pathname.
+// refreshList 가 같은 항목을 다시 렌더하려 할 때, 사용자가 저장 안 한 편집이 있으면 폼을 안 덮어쓰게 한다.
+let lastRenderedCharPath: string | null = null;
+let lastRenderedMapPath: string | null = null;
+let lastRenderedAudioPath: string | null = null;
 
 function showToast(msg: string, kind: 'ok' | 'err' = 'ok', ms = 2200): void {
   const el = document.getElementById('toast');
@@ -121,6 +134,82 @@ function loadSheet(url: string, onReady: (img: HTMLImageElement) => void): void 
   img.onload = () => { sheetByUrl.set(url, img); onReady(img); };
   img.onerror = () => { sheetByUrl.set(url, 'error'); };
   img.src = url;
+}
+
+// ── 업로드 진행률 row API ──────────────────────────────────────────
+//   success() → OK 표시 후 5초 뒤 자동 제거.
+//   failure(msg, retry) → ERR 표시 + 메시지. row 는 사용자가 직접 닫거나(×) Retry 누를 때까지 유지.
+//
+// 부분 실패 (예: ZIP 다단계 중 후반 step) 시 사용자가 어디서 실패했는지 보고 재시도할 수 있게.
+
+interface ProgressRow {
+  setStage(label: string): void;
+  setProgress(loaded: number, total: number): void;
+  setPercent(pct: number): void;
+  success(label?: string): void;
+  failure(message: string, retry: () => Promise<void>): void;
+  remove(): void;
+}
+
+function appendProgressRow(initialName: string): ProgressRow {
+  const progressEl = document.getElementById('upload-progress')!;
+  const row = document.createElement('div');
+  row.className = 'lib-progress-row';
+  row.innerHTML = `
+    <span class="name"></span>
+    <span class="bar"><div style="width:0%"></div></span>
+    <span class="pct">0%</span>
+    <button type="button" class="lib-progress-retry hidden">Retry</button>
+    <button type="button" class="lib-progress-dismiss hidden" aria-label="dismiss">&times;</button>
+  `;
+  progressEl.appendChild(row);
+  const nameEl = row.querySelector('.name') as HTMLElement;
+  const bar = row.querySelector('.bar > div') as HTMLDivElement;
+  const pct = row.querySelector('.pct') as HTMLSpanElement;
+  const retryBtn = row.querySelector('.lib-progress-retry') as HTMLButtonElement;
+  const dismissBtn = row.querySelector('.lib-progress-dismiss') as HTMLButtonElement;
+  nameEl.textContent = initialName;
+  dismissBtn.addEventListener('click', () => row.remove());
+
+  return {
+    setStage(label) { nameEl.textContent = label; },
+    setProgress(loaded, total) {
+      const p = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      bar.style.width = p + '%';
+      pct.textContent = p + '%';
+    },
+    setPercent(p) {
+      bar.style.width = p + '%';
+      pct.textContent = p + '%';
+    },
+    success(label) {
+      row.classList.remove('err');
+      row.classList.add('ok');
+      bar.style.width = '100%';
+      pct.textContent = 'OK';
+      if (label) nameEl.textContent = label;
+      retryBtn.classList.add('hidden');
+      dismissBtn.classList.add('hidden');
+      setTimeout(() => row.remove(), 5000);
+    },
+    failure(message, retry) {
+      row.classList.remove('ok');
+      row.classList.add('err');
+      pct.textContent = 'ERR';
+      nameEl.textContent = message;
+      retryBtn.classList.remove('hidden');
+      dismissBtn.classList.remove('hidden');
+      retryBtn.onclick = (): void => {
+        retryBtn.classList.add('hidden');
+        dismissBtn.classList.add('hidden');
+        row.classList.remove('err');
+        pct.textContent = '0%';
+        bar.style.width = '0%';
+        void retry();
+      };
+    },
+    remove() { row.remove(); },
+  };
 }
 
 function emptyLabel(cat: Category): string {
@@ -190,11 +279,11 @@ async function refreshList(): Promise<void> {
         else if (it.pathname.endsWith('.meta.json') || it.pathname.endsWith('/meta.json')) sidecars.push(it);
         // 그 외(anims/*, custom 등)는 폴더 합산에만 반영
       }
-      // ZIP 폴더 안 모든 파일 크기 합산
+      // ZIP 폴더 안 모든 파일 크기 합산 — 대표(썸네일) pathname 을 키로
       for (const it of all) {
         const m = /^characters\/([^/]+)\//.exec(it.pathname);
         if (m) {
-          const thumbPath = `characters/${m[1]}/thumbnail.png`;
+          const thumbPath = thumbnailPathFor(m[1]);
           folderTotalSize.set(thumbPath, (folderTotalSize.get(thumbPath) ?? 0) + it.size);
         }
       }
@@ -255,9 +344,7 @@ async function refreshList(): Promise<void> {
               format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
               originalZipUrl?: string;
             };
-            const charPath = s.pathname.endsWith('/meta.json')
-              ? s.pathname.replace(/\/meta\.json$/, '/thumbnail.png')
-              : s.pathname.replace(/\.meta\.json$/, '.png');
+            const charPath = entryPathForSidecar(s.pathname);
             // 대응하는 대표 파일이 실제로 존재하지 않으면 orphan 메타 — 무시
             if (!itemPaths.has(charPath)) return;
             if (Array.isArray(j.actions)) {
@@ -289,24 +376,25 @@ async function refreshList(): Promise<void> {
     list.innerHTML = '';
     for (const it of items) list.appendChild(makeItem(it));
 
-    // 첫 행 자동 선택 — 각 카테고리별
+    // 첫 행 자동 선택 — 각 카테고리별.
+    // 이미 선택된 항목을 다시 그리는 경로는 preserveDirty=true 로 — 저장 안 한 편집을 살림.
     if (activeCat === 'characters') {
       if (!selectedChar || !items.some((i) => i.pathname === selectedChar!.pathname)) {
         selectChar(items[0]);
       } else {
-        renderDetail(selectedChar);
+        renderDetail(selectedChar, { preserveDirty: true });
       }
     } else if (activeCat === 'maps') {
       if (!selectedMap || !items.some((i) => i.pathname === selectedMap!.pathname)) {
         selectMap(items[0]);
       } else {
-        renderMapDetail(selectedMap);
+        renderMapDetail(selectedMap, { preserveDirty: true });
       }
     } else if (activeCat === 'bgm') {
       if (!selectedAudio || !items.some((i) => i.pathname === selectedAudio!.pathname)) {
         selectAudio(items[0]);
       } else {
-        renderAudioDetail(selectedAudio);
+        renderAudioDetail(selectedAudio, { preserveDirty: true });
       }
     }
   } catch (e) {
@@ -321,16 +409,15 @@ async function refreshList(): Promise<void> {
 
 /** 캐릭터 삭제 — single 은 PNG+meta, ZIP 은 폴더 안 모든 파일(thumbnail/anims/meta). */
 async function deleteCharacter(it: BlobItem): Promise<void> {
-  const isZip = it.pathname.endsWith('/thumbnail.png');
-  if (!isZip) {
+  if (!isZipEntryPath(it.pathname)) {
     // legacy: PNG + sidecar meta.json
     await deleteAsset(token, it.url);
-    const metaUrl = it.url.replace(/\.png$/i, '.meta.json');
-    try { await deleteAsset(token, metaUrl); } catch { /* 무시 */ }
+    const metaUrl = metaUrlForEntry(it.url, it.pathname);
+    try { await deleteAsset(token, metaUrl); } catch { /* sidecar 없을 수 있음 */ }
     return;
   }
-  // ZIP: 폴더의 모든 파일 나열 후 삭제
-  const folderPrefix = it.pathname.slice(0, it.pathname.lastIndexOf('/') + 1); // 'characters/Foo/'
+  // ZIP: 폴더 안 모든 파일 나열 후 삭제
+  const folderPrefix = zipFolderPrefix(charBaseName(it.pathname));
   const all = await listAssets(token, 'characters');
   const toDelete = all.filter((b) => b.pathname.startsWith(folderPrefix));
   for (const b of toDelete) {
@@ -344,24 +431,7 @@ function bodyLabel(body: BodyType | undefined): string {
   if (body === 'none') return 'None';
   return '—';
 }
-function charBaseName(pathname: string): string {
-  // characters/foo.png → foo
-  // characters/Foo/thumbnail.png → Foo  (ZIP 포맷)
-  if (pathname.endsWith('/thumbnail.png')) {
-    const after = pathname.slice('characters/'.length);
-    return after.slice(0, after.length - '/thumbnail.png'.length);
-  }
-  return shortName(pathname).replace(/\.[^.]+$/, '');
-}
-/** pathname 이 캐릭터 '대표 파일' 인지 (리스트에 등장하는 파일). 내부 anims/* 는 false. */
-function isCharacterEntryPath(pathname: string): boolean {
-  if (!pathname.startsWith('characters/') || pathname.endsWith('.meta.json')) return false;
-  const tail = pathname.slice('characters/'.length);
-  // 'foo.png' (no slash) → legacy 대표 PNG
-  if (!tail.includes('/')) return tail.toLowerCase().endsWith('.png');
-  // 'Foo/thumbnail.png' → ZIP 대표 썸네일
-  return tail.endsWith('/thumbnail.png');
-}
+// charBaseName, isCharacterEntryPath 는 paths.ts 로 이동.
 function displayName(it: BlobItem): string {
   return charMetaByPath.get(it.pathname)?.name || charBaseName(it.pathname);
 }
@@ -455,9 +525,7 @@ async function ensureCharactersLoaded(): Promise<void> {
           format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
           originalZipUrl?: string;
         };
-        const charPath = s.pathname.endsWith('/meta.json')
-          ? s.pathname.replace(/\/meta\.json$/, '/thumbnail.png')
-          : s.pathname.replace(/\.meta\.json$/, '.png');
+        const charPath = entryPathForSidecar(s.pathname);
         if (!entryPaths.has(charPath)) return;
         if (Array.isArray(j.actions)) {
           charMetaByPath.set(charPath, {
@@ -582,7 +650,7 @@ function selectChar(it: BlobItem): void {
   renderDetail(it);
 }
 
-function renderDetail(it: BlobItem | null): void {
+function renderDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {}): void {
   const emptyEl = document.getElementById('detail-empty')!;
   const formEl = document.getElementById('detail-form')!;
   const nameInput = document.getElementById('detail-name') as HTMLInputElement;
@@ -594,8 +662,14 @@ function renderDetail(it: BlobItem | null): void {
   const actionsEl = document.getElementById('detail-actions')!;
   const canvas = document.getElementById('detail-preview') as HTMLCanvasElement;
 
+  // 같은 항목 + 저장 안 된 편집이 있는 상태 → 폼 reset 스킵 (사용자 입력 보호)
+  if (it && opts.preserveDirty && lastRenderedCharPath === it.pathname && !saveBtn.disabled) {
+    return;
+  }
+
   stopAnimation();
   if (!it) {
+    lastRenderedCharPath = null;
     emptyEl.classList.remove('hidden');
     formEl.classList.add('hidden');
     actionsEl.innerHTML = '';
@@ -603,6 +677,7 @@ function renderDetail(it: BlobItem | null): void {
     if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
     return;
   }
+  lastRenderedCharPath = it.pathname;
   emptyEl.classList.add('hidden');
   formEl.classList.remove('hidden');
 
@@ -674,13 +749,11 @@ function renderDetail(it: BlobItem | null): void {
     saveBtn.textContent = 'Saving…';
     try {
       const newFields = customFieldsHost.values();
-      const isZip = meta?.format === 'zip' || it.pathname.endsWith('/thumbnail.png');
-      const baseName = charBaseName(it.pathname);
+      const isZip = isZipEntryPath(it.pathname);
+      const fmt: CharFormat = isZip ? 'zip' : 'single';
 
-      // 기존 메타를 fetch 해서 우리가 모르는 필드(LPC character state 등)도 보존
-      const existingMetaUrl = isZip
-        ? it.url.replace(/\/thumbnail\.png$/, '/meta.json')
-        : it.url.replace(/\.png$/i, '.meta.json');
+      // 기존 메타 fetch → 우리가 모르는 필드(LPC character state, anims, originalZipUrl 등)도 보존
+      const existingMetaUrl = metaUrlForEntry(it.url, it.pathname);
       let existing: Record<string, unknown> = {};
       try {
         const r = await fetch(existingMetaUrl, { cache: 'reload' });
@@ -691,7 +764,7 @@ function renderDetail(it: BlobItem | null): void {
         ...existing,
         schema: 1,
         source: isZip ? 'lpc-zip' : 'lpc',
-        format: isZip ? 'zip' : 'single',
+        format: fmt,
         body: bodySel.value as BodyType,
         name: nameInput.value.trim(),
         race: raceInput.value.trim() || undefined,
@@ -699,8 +772,11 @@ function renderDetail(it: BlobItem | null): void {
         fields: newFields,
         savedAt: new Date().toISOString(),
       };
-      const metaName = isZip ? `${baseName}/meta.json` : `${baseName}.meta.json`;
-      const metaFile = new File([JSON.stringify(merged, null, 2)], metaName, { type: 'application/json' });
+      const metaFile = new File(
+        [JSON.stringify(merged, null, 2)],
+        metaFilenameFor(it.pathname),
+        { type: 'application/json' },
+      );
       await uploadAsset(token, 'characters', metaFile);
 
       const newMeta: CharMeta = {
@@ -768,7 +844,7 @@ function selectMap(it: BlobItem): void {
   renderMapDetail(it);
 }
 
-function renderMapDetail(it: BlobItem | null): void {
+function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {}): void {
   const emptyEl = document.getElementById('map-empty')!;
   const formEl = document.getElementById('map-form')!;
   const nameInput = document.getElementById('map-name') as HTMLInputElement;
@@ -780,7 +856,12 @@ function renderMapDetail(it: BlobItem | null): void {
   const previewC = document.getElementById('map-preview') as HTMLCanvasElement;
   const customHost = document.getElementById('map-custom-fields')!;
 
+  if (it && opts.preserveDirty && lastRenderedMapPath === it.pathname && !saveBtn.disabled) {
+    return;
+  }
+
   if (!it) {
+    lastRenderedMapPath = null;
     emptyEl.classList.remove('hidden');
     formEl.classList.add('hidden');
     statsEl.innerHTML = '';
@@ -789,6 +870,7 @@ function renderMapDetail(it: BlobItem | null): void {
     if (ctx) ctx.clearRect(0, 0, previewC.width, previewC.height);
     return;
   }
+  lastRenderedMapPath = it.pathname;
   emptyEl.classList.add('hidden');
   formEl.classList.remove('hidden');
 
@@ -901,7 +983,7 @@ function selectAudio(it: BlobItem): void {
   renderAudioDetail(it);
 }
 
-function renderAudioDetail(it: BlobItem | null): void {
+function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {}): void {
   const emptyEl = document.getElementById('audio-empty')!;
   const formEl = document.getElementById('audio-form')!;
   const player = document.getElementById('audio-player') as HTMLAudioElement;
@@ -917,12 +999,18 @@ function renderAudioDetail(it: BlobItem | null): void {
   const warnEl = document.getElementById('audio-warn')!;
   const customHost = document.getElementById('audio-custom-fields')!;
 
+  if (it && opts.preserveDirty && lastRenderedAudioPath === it.pathname && !saveBtn.disabled) {
+    return;
+  }
+
   if (!it) {
+    lastRenderedAudioPath = null;
     emptyEl.classList.remove('hidden');
     formEl.classList.add('hidden');
     player.src = '';
     return;
   }
+  lastRenderedAudioPath = it.pathname;
   emptyEl.classList.add('hidden');
   formEl.classList.remove('hidden');
 
@@ -1454,51 +1542,41 @@ async function handleFiles(files: FileList | File[]): Promise<void> {
  *  cat 은 호출 시점에 고정 — 업로드 중 사용자가 탭을 옮겨도 엉뚱한 카테고리로 가지 않도록. */
 async function uploadOne(file: File, displayName: string, cat: Category, opts?: {
   characterActions?: LPCAction[];
-  characterBaseName?: string;
+  characterBaseName?: string;     // legacy PNG 의 base (확장자 없음)
   characterDisplayName?: string;
   characterBody?: BodyType;
   characterRace?: string;
 }): Promise<void> {
-  const progressEl = document.getElementById('upload-progress')!;
-  const row = document.createElement('div');
-  row.className = 'lib-progress-row';
-  row.innerHTML = `<span class="name"></span><span class="bar"><div style="width:0%"></div></span><span class="pct">0%</span>`;
-  progressEl.appendChild(row);
-  const bar = row.querySelector('.bar > div') as HTMLDivElement;
-  const pct = row.querySelector('.pct') as HTMLSpanElement;
-  const nameEl = row.querySelector('.name')!;
-  nameEl.textContent = displayName;
-
-  try {
-    await uploadAsset(token, cat, file, (loaded, total) => {
-      const p = total > 0 ? Math.round((loaded / total) * 100) : 0;
-      bar.style.width = p + '%';
-      pct.textContent = p + '%';
-    });
-    if (opts?.characterActions && opts.characterBaseName) {
-      const metaName = `${opts.characterBaseName}.meta.json`;
-      const metaBody = JSON.stringify({
-        schema: 1,
-        source: 'lpc',
-        body: opts.characterBody ?? 'none',
-        name: opts.characterDisplayName ?? opts.characterBaseName,
-        race: opts.characterRace || undefined,
-        actions: opts.characterActions,
-        detectedAt: new Date().toISOString(),
-      }, null, 2);
-      const metaFile = new File([metaBody], metaName, { type: 'application/json' });
-      await uploadAsset(token, cat, metaFile);
+  const progress = appendProgressRow(displayName);
+  const run = async (): Promise<void> => {
+    try {
+      progress.setStage(displayName);
+      await uploadAsset(token, cat, file, (l, t) => progress.setProgress(l, t));
+      if (opts?.characterActions && opts.characterBaseName) {
+        progress.setStage(`${displayName} — metadata`);
+        const metaName = metaFilenameForLegacy(opts.characterBaseName);
+        const metaBody = JSON.stringify({
+          schema: 1,
+          source: 'lpc',
+          format: 'single' as const,
+          body: opts.characterBody ?? 'none',
+          name: opts.characterDisplayName ?? opts.characterBaseName,
+          race: opts.characterRace || undefined,
+          actions: opts.characterActions,
+          detectedAt: new Date().toISOString(),
+        }, null, 2);
+        const metaFile = new File([metaBody], metaName, { type: 'application/json' });
+        await uploadAsset(token, cat, metaFile);
+      }
+      progress.success();
+      refreshList();
+    } catch (e) {
+      if (e instanceof AuthError) clearToken();
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      progress.failure(`${displayName} — ${msg}`, run);
     }
-    row.classList.add('ok');
-    pct.textContent = 'OK';
-  } catch (e) {
-    row.classList.add('err');
-    pct.textContent = 'ERR';
-    const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
-    nameEl.textContent = `${displayName} — ${msg}`;
-    if (e instanceof AuthError) { clearToken(); }
-  }
-  setTimeout(() => row.remove(), 5000);
+  };
+  await run();
 }
 
 /** 캐릭터 업로드 모달 흐름. detect → preview + name input → user confirms → uploadOne. */
@@ -1621,86 +1699,102 @@ async function uploadCharacterZipWithModal(zipFile: File): Promise<void> {
   });
 }
 
-/** ZIP 캐릭터를 Blob 에 폴더 구조로 업로드. characters/<base>/{thumbnail.png, anims/*.png, meta.json}. */
+/** ZIP 캐릭터를 Blob 에 폴더 구조로 업로드. characters/<base>/{thumbnail.png, anims/*.png, meta.json, original.zip}. */
 async function uploadZipCharacter(
   parsed: ParsedLpcZip, baseName: string, displayName: string,
   body: BodyType, race: string, originalZip: File,
 ): Promise<void> {
-  const progressEl = document.getElementById('upload-progress')!;
-  const row = document.createElement('div');
-  row.className = 'lib-progress-row';
-  row.innerHTML = `<span class="name">${displayName}</span><span class="bar"><div style="width:0%"></div></span><span class="pct">0%</span>`;
-  progressEl.appendChild(row);
-  const bar = row.querySelector('.bar > div') as HTMLDivElement;
-  const pct = row.querySelector('.pct') as HTMLSpanElement;
-  const nameEl = row.querySelector('.name')!;
-
-  // 폴더 prefix 로 업로드 — file.name 에 슬래시가 들어가면 Blob pathname 에 그대로 반영됨.
-  const animUrls: Record<string, string> = {};
-  let originalZipUrl: string | undefined;
   const totalFiles = parsed.animFiles.size + (parsed.thumbnail ? 1 : 0) + 2; // anims + thumb + original.zip + meta
-  let done = 0;
-  const tick = (): void => {
-    done++;
-    const p = Math.round((done / totalFiles) * 100);
-    bar.style.width = p + '%';
-    pct.textContent = p + '%';
+  const progress = appendProgressRow(displayName);
+
+  const run = async (): Promise<void> => {
+    progress.setStage(displayName);
+    progress.setPercent(0);
+    let done = 0;
+    const tick = (): void => { done++; progress.setPercent(Math.round((done / totalFiles) * 100)); };
+
+    // 재시도 시 이미 올라간 파일은 listing 의 URL 만 재사용 — 동일 파일 재업로드를 피함.
+    const existingByPath = new Map<string, string>();
+    try {
+      const prefix = zipFolderPrefix(baseName);
+      const all = await listAssets(token, 'characters');
+      for (const b of all) {
+        if (b.pathname.startsWith(prefix)) existingByPath.set(b.pathname, b.url);
+      }
+    } catch { /* 무시 — 빈 맵으로 진행 (첫 업로드 시점에는 비어있음) */ }
+
+    const animUrls: Record<string, string> = {};
+    let originalZipUrl: string | undefined;
+
+    try {
+      // 1) 썸네일
+      if (parsed.thumbnail) {
+        progress.setStage(`${displayName} — thumbnail`);
+        if (!existingByPath.has(thumbnailPathFor(baseName))) {
+          const thumbFile = new File([parsed.thumbnail], thumbnailFilenameFor(baseName), { type: 'image/png' });
+          await uploadAsset(token, 'characters', thumbFile);
+        }
+        tick();
+      }
+      // 2) 각 액션 PNG
+      for (const [anim, file] of parsed.animFiles) {
+        progress.setStage(`${displayName} — ${anim}`);
+        const path = animPathFor(baseName, anim);
+        const existingUrl = existingByPath.get(path);
+        if (existingUrl) {
+          animUrls[anim] = existingUrl;
+        } else {
+          const out = new File([file], animFilenameFor(baseName, anim), { type: 'image/png' });
+          const blob = await uploadAsset(token, 'characters', out);
+          animUrls[anim] = blob.url;
+        }
+        tick();
+      }
+      // 3) 원본 ZIP
+      progress.setStage(`${displayName} — original.zip`);
+      const origPath = originalZipPathFor(baseName);
+      const existingOrig = existingByPath.get(origPath);
+      if (existingOrig) {
+        originalZipUrl = existingOrig;
+      } else {
+        const origFile = new File([originalZip], originalZipFilenameFor(baseName), { type: 'application/zip' });
+        const origBlob = await uploadAsset(token, 'characters', origFile);
+        originalZipUrl = origBlob.url;
+      }
+      tick();
+      // 4) meta.json (마지막에 — anims URL 다 모은 다음)
+      progress.setStage(`${displayName} — metadata`);
+      const meta = {
+        schema: 1,
+        source: 'lpc-zip',
+        format: 'zip' as const,
+        name: displayName,
+        body,
+        race: race || undefined,
+        actions: parsed.standardAnims.filter((a) => Object.prototype.hasOwnProperty.call(ANIMATION_CONFIGS, a)) as LPCAction[],
+        anims: animUrls,
+        customAnims: parsed.customAnims,
+        originalZipUrl,
+        character: parsed.character ?? null,
+        detectedAt: new Date().toISOString(),
+      };
+      const metaFile = new File(
+        [JSON.stringify(meta, null, 2)],
+        metaFilenameForZip(baseName),
+        { type: 'application/json' },
+      );
+      await uploadAsset(token, 'characters', metaFile);
+      tick();
+      progress.success(`${displayName} — done (${parsed.animFiles.size} animations)`);
+      refreshList();
+    } catch (e) {
+      if (e instanceof AuthError) clearToken();
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      progress.failure(`${displayName} — ${msg}`, run);
+    }
   };
 
-  try {
-    // 1) 썸네일
-    if (parsed.thumbnail) {
-      nameEl.textContent = `${displayName} — thumbnail`;
-      const thumbFile = new File([parsed.thumbnail], `${baseName}/thumbnail.png`, { type: 'image/png' });
-      await uploadAsset(token, 'characters', thumbFile);
-      tick();
-    }
-    // 2) 각 액션 PNG
-    for (const [anim, file] of parsed.animFiles) {
-      nameEl.textContent = `${displayName} — ${anim}`;
-      const out = new File([file], `${baseName}/anims/${anim}.png`, { type: 'image/png' });
-      const blob = await uploadAsset(token, 'characters', out);
-      animUrls[anim] = blob.url;
-      tick();
-    }
-    // 3) 원본 ZIP — 다운로드용 (re-import / 백업 용도)
-    nameEl.textContent = `${displayName} — original.zip`;
-    const origFile = new File([originalZip], `${baseName}/original.zip`, { type: 'application/zip' });
-    const origBlob = await uploadAsset(token, 'characters', origFile);
-    originalZipUrl = origBlob.url;
-    tick();
-    // 4) meta.json (마지막에 — anims URL 다 모은 다음)
-    nameEl.textContent = `${displayName} — metadata`;
-    const meta = {
-      schema: 1,
-      source: 'lpc-zip',
-      format: 'zip' as const,
-      name: displayName,
-      body,
-      race: race || undefined,
-      // 표준 액션 이름들을 우리 LPCAction 매핑에 맞게 변환 (e.g. 'backslash' → '1h_backslash')
-      actions: parsed.standardAnims.filter((a) => Object.prototype.hasOwnProperty.call(ANIMATION_CONFIGS, a)) as LPCAction[],
-      anims: animUrls,
-      customAnims: parsed.customAnims,
-      originalZipUrl,
-      character: parsed.character ?? null,
-      detectedAt: new Date().toISOString(),
-    };
-    const metaFile = new File([JSON.stringify(meta, null, 2)], `${baseName}/meta.json`, { type: 'application/json' });
-    await uploadAsset(token, 'characters', metaFile);
-    tick();
-    row.classList.add('ok');
-    pct.textContent = 'OK';
-    nameEl.textContent = `${displayName} — done (${parsed.animFiles.size} animations)`;
-  } catch (e) {
-    row.classList.add('err');
-    pct.textContent = 'ERR';
-    const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
-    nameEl.textContent = `${displayName} — ${msg}`;
-    if (e instanceof AuthError) { clearToken(); }
-  }
-  setTimeout(() => row.remove(), 5000);
-  refreshList();
+  await run();
 }
 
 async function uploadCharacterWithModal(file: File): Promise<void> {
@@ -1926,45 +2020,32 @@ async function uploadAudioFile(
   file: File, baseName: string, displayName: string,
   category: AudioCategory, loop: boolean, memo: string | undefined,
 ): Promise<void> {
-  const progressEl = document.getElementById('upload-progress')!;
-  const row = document.createElement('div');
-  row.className = 'lib-progress-row';
-  row.innerHTML = `<span class="name"></span><span class="bar"><div style="width:0%"></div></span><span class="pct">0%</span>`;
-  progressEl.appendChild(row);
-  const bar = row.querySelector('.bar > div') as HTMLDivElement;
-  const pct = row.querySelector('.pct') as HTMLSpanElement;
-  const nameEl = row.querySelector('.name')!;
-  nameEl.textContent = file.name;
-
-  try {
-    await uploadAsset(token, 'bgm', file, (loaded, total) => {
-      const p = total > 0 ? Math.round((loaded / total) * 100) : 0;
-      bar.style.width = p + '%';
-      pct.textContent = p + '%';
-    });
-    const metaName = `${baseName}.meta.json`;
-    const meta = {
-      schema: 1,
-      name: displayName,
-      volume: 0.7,
-      loop,
-      category,
-      memo,
-      savedAt: new Date().toISOString(),
-    };
-    const metaFile = new File([JSON.stringify(meta, null, 2)], metaName, { type: 'application/json' });
-    await uploadAsset(token, 'bgm', metaFile);
-    row.classList.add('ok');
-    pct.textContent = 'OK';
-  } catch (e) {
-    row.classList.add('err');
-    pct.textContent = 'ERR';
-    const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
-    nameEl.textContent = `${file.name} — ${msg}`;
-    if (e instanceof AuthError) { clearToken(); }
-  }
-  setTimeout(() => row.remove(), 5000);
-  refreshList();
+  const progress = appendProgressRow(file.name);
+  const run = async (): Promise<void> => {
+    try {
+      progress.setStage(file.name);
+      await uploadAsset(token, 'bgm', file, (l, t) => progress.setProgress(l, t));
+      progress.setStage(`${file.name} — metadata`);
+      const meta = {
+        schema: 1,
+        name: displayName,
+        volume: 0.7,
+        loop,
+        category,
+        memo,
+        savedAt: new Date().toISOString(),
+      };
+      const metaFile = new File([JSON.stringify(meta, null, 2)], `${baseName}.meta.json`, { type: 'application/json' });
+      await uploadAsset(token, 'bgm', metaFile);
+      progress.success();
+      refreshList();
+    } catch (e) {
+      if (e instanceof AuthError) clearToken();
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      progress.failure(`${file.name} — ${msg}`, run);
+    }
+  };
+  await run();
 }
 
 function ready(fn: () => void): void {

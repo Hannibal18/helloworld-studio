@@ -85,6 +85,26 @@
   color: var(--text-dim);
   width: 32px; text-align: right;
 }
+.lib-progress-row .lib-progress-retry,
+.lib-progress-row .lib-progress-dismiss {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  line-height: 1.2;
+}
+.lib-progress-row .lib-progress-retry:hover,
+.lib-progress-row .lib-progress-dismiss:hover {
+  background: var(--surface-2);
+}
+.lib-progress-row .lib-progress-dismiss {
+  width: 22px; padding: 2px 0; text-align: center;
+}
+.lib-progress-row.err .lib-progress-retry { border-color: #e88c7a; color: #e88c7a; }
 
 /* Master-detail 컨테이너 — Characters 탭에선 우측에 detail 패널 표시 */
 .lib-content {
