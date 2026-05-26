@@ -621,17 +621,45 @@ html, body {
 }
 .lib-detail-history-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  gap: 8px; align-items: center;
-  padding: 4px 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px; align-items: center;
+  padding: 6px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.1s, background 0.1s;
 }
+.lib-detail-history-row:hover { border-color: var(--accent); }
 .lib-detail-history-row .h-num {
   color: var(--text-mute);
   font-weight: 600;
-  min-width: 22px;
+  white-space: nowrap;
+}
+.lib-detail-history-row .h-meta {
+  display: flex; flex-direction: column; min-width: 0;
+}
+.lib-detail-history-row .h-fname {
+  color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-detail-history-row .h-ts {
+  color: var(--text-mute);
+  font-size: var(--fs-xs);
+}
+.lib-detail-history-row a.st-btn {
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  text-decoration: none;
+}
+.lib-detail-history-row.lib-history-current {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+}
+.lib-detail-history-row.lib-history-current .h-num { color: var(--accent); }
+.lib-detail-history-row.lib-history-active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 /* 리스트 row 의 자산 이름 옆 버전 라벨 (예: 'v3', 'v3*' = legacy 추정) */
 .lib-item-version {
@@ -644,13 +672,6 @@ html, body {
   border-radius: 4px;
   margin-left: 4px;
   vertical-align: middle;
-}
-.lib-detail-history-row .h-ts { color: var(--text); overflow-wrap: anywhere; }
-.lib-detail-history-row .h-size { color: var(--text-mute); }
-.lib-detail-history-row a.st-btn,
-.lib-detail-history-row button.st-btn {
-  padding: 2px 8px;
-  font-size: var(--fs-xs);
 }
 .lib-detail-actions button {
   font-size: var(--fs-xs);

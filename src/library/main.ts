@@ -74,15 +74,21 @@ interface CharMeta {
 
 // pathname → 자산 메타 (캐릭터/맵/오디오 공용 — 카테고리별로 사용하는 필드만 채움).
 const charMetaByPath = new Map<string, CharMeta>();
+interface MapVersionRecord {
+  version: number;
+  savedAt: string;              // ISO — _history/<ts>.zip 의 timestamp 와 일치
+  originalMapFilename: string;  // 업로드 당시 ZIP 안 메인 맵 파일 이름 (e.g. 'cops_lobby.tmj')
+}
+
 interface MapMeta {
-  /** 자산의 변하지 않는 정체성 (폴더명 = ID). 첫 업로드 시 자동 생성, 절대 변경 X.
-   *  옛 자산(이 필드가 없는)은 라이브러리가 폴더명을 fallback 으로 사용. */
   id?: string;
-  /** 사용자에게 표시되는 자유 이름 — 자유롭게 변경 가능. */
   name?: string;
-  /** 현재 active 버전 번호 (1부터 시작). 새 버전 업로드 시 + 1 명시 저장.
-   *  옛 자산은 이 필드 없음 — 라이브러리에서 history 개수 + 1 fallback. */
   version?: number;
+  /** 이전 버전들의 기록 (current 제외). 새 버전 업로드 시 옛 active 의 정보가 push 된다.
+   *  각 record 의 savedAt 은 _history/<savedAt>.zip 파일과 1:1 매핑. */
+  versionHistory?: MapVersionRecord[];
+  /** 이 (current) 자산이 저장된 ISO timestamp. */
+  savedAt?: string;
   fields?: Record<string, string>;
   // ZIP 맵 전용 (legacy 단일 .json 맵은 'single' 또는 undefined).
   format?: 'single' | 'zip';
@@ -1155,7 +1161,7 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
         void uploadMapNewVersion(it, baseName, f);
       };
       // history 목록 — _history/*.zip 들 fetch
-      void renderMapHistory(historyHost, baseName);
+      void renderMapHistory(historyHost, it, baseName, meta, previewC);
     } else {
       versionBtn.style.display = 'none';
       historyHost.innerHTML = '';
@@ -1163,42 +1169,153 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
   }
 }
 
-/** 히스토리 파일명(ISO timestamp 의 ':' → '-' 형태) 을 사람 친화적 날짜로. */
-function fmtHistoryTimestamp(filenameStem: string): string {
-  // 'YYYY-MM-DDTHH-MM-SS.SSSZ' → 'YYYY-MM-DDTHH:MM:SS.SSSZ' 복원
-  const restored = filenameStem.replace(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/, '$1-$2-$3T$4:$5:$6');
-  const d = new Date(restored);
-  if (Number.isNaN(d.getTime())) return filenameStem;
+/** ISO timestamp 를 사람 친화적 날짜시간 으로. */
+function fmtIsoForDisplay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
   const pad = (n: number): string => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-async function renderMapHistory(host: HTMLElement, baseName: string): Promise<void> {
+/** history 파일명(ISO 의 ':' → '-' 변환됨) 을 원래 ISO 로 복원. */
+function historyFilenameToIso(stem: string): string {
+  return stem.replace(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/, '$1-$2-$3T$4:$5:$6');
+}
+
+interface VersionRowData {
+  version: number;
+  savedAt: string;          // ISO
+  originalMapFilename: string;
+  isCurrent: boolean;
+  /** current 면 main.json URL, history 면 zip URL. */
+  previewUrl: string;
+  /** 다운로드용 zip URL. current 면 originalZipUrl, history 면 history zip url. */
+  downloadUrl?: string;
+  downloadName: string;
+}
+
+async function renderMapHistory(
+  host: HTMLElement,
+  currentEntry: BlobItem,
+  baseName: string,
+  meta: MapMeta | undefined,
+  previewCanvas: HTMLCanvasElement,
+): Promise<void> {
   host.innerHTML = '<div class="lib-detail-empty">Loading history…</div>';
   try {
     const all = await listAssets(token, 'maps');
-    const prefix = `${mapFolderPrefix(baseName)}_history/`;
-    // 위에서부터 가장 오래된 것이 1번 — pathname ascending sort (ISO timestamp 가 사전순 = 시간순).
-    const items = all
-      .filter((b) => b.pathname.startsWith(prefix) && b.pathname.endsWith('.zip'))
-      .sort((a, b) => a.pathname.localeCompare(b.pathname));
-    if (items.length === 0) {
-      host.innerHTML = '<div class="lib-detail-empty">No previous versions yet.</div>';
-      return;
+    const historyPrefix = `${mapFolderPrefix(baseName)}_history/`;
+    const historyZips = all.filter((b) => b.pathname.startsWith(historyPrefix) && b.pathname.endsWith('.zip'));
+
+    // versionHistory 가 있으면 (새 자산) 그걸 진실 source 로 사용. 없으면 (옛 자산) zip 파일명에서 추론.
+    const rows: VersionRowData[] = [];
+    const currentVersion = meta?.version ?? (historyZips.length + 1);
+    const currentSavedAt = meta?.savedAt ?? new Date(currentEntry.uploadedAt).toISOString();
+    rows.push({
+      version: currentVersion,
+      savedAt: currentSavedAt,
+      originalMapFilename: meta?.originalMapFilename ?? '(unknown)',
+      isCurrent: true,
+      previewUrl: currentEntry.url,
+      downloadUrl: meta?.originalZipUrl,
+      downloadName: `${meta?.name || baseName}-v${currentVersion}.zip`,
+    });
+
+    // history 행들. versionHistory 있으면 사용, 아니면 zip 파일명에서 추론
+    if (meta?.versionHistory && meta.versionHistory.length > 0) {
+      for (const rec of meta.versionHistory) {
+        const zipPath = mapHistoryFilenameFor(baseName, rec.savedAt);  // maps/<id>/_history/<safe>.zip → 'characters' 가 아니라 'maps' prefix 제거된 filename
+        const fullPath = `maps/${zipPath}`;
+        const zip = historyZips.find((z) => z.pathname === fullPath);
+        rows.push({
+          version: rec.version,
+          savedAt: rec.savedAt,
+          originalMapFilename: rec.originalMapFilename,
+          isCurrent: false,
+          previewUrl: zip?.url ?? '',
+          downloadUrl: zip?.url,
+          downloadName: `${meta?.name || baseName}-v${rec.version}.zip`,
+        });
+      }
+    } else if (historyZips.length > 0) {
+      // 옛 자산 fallback — zip 파일명의 timestamp 를 사용. 파일 이름은 모름 ('(legacy)').
+      const sortedAsc = [...historyZips].sort((a, b) => a.pathname.localeCompare(b.pathname));
+      sortedAsc.forEach((z, idx) => {
+        const stem = z.pathname.slice(historyPrefix.length).replace(/\.zip$/, '');
+        const iso = historyFilenameToIso(stem);
+        rows.push({
+          version: idx + 1,
+          savedAt: iso,
+          originalMapFilename: '(legacy)',
+          isCurrent: false,
+          previewUrl: z.url,
+          downloadUrl: z.url,
+          downloadName: `${baseName}-v${idx + 1}.zip`,
+        });
+      });
     }
+
+    // 가장 위에 current, 그 아래로 옛 버전들 (descending — 최근 → 과거)
+    const historyRows = rows.filter((r) => !r.isCurrent).sort((a, b) => b.version - a.version);
+    const ordered = [rows[0], ...historyRows];
+
     host.innerHTML = '';
-    items.forEach((b, idx) => {
+    let activeRowEl: HTMLElement | null = null;
+    ordered.forEach((r) => {
       const row = document.createElement('div');
       row.className = 'lib-detail-history-row';
-      const fnStem = b.pathname.slice(prefix.length).replace(/\.zip$/, '');
-      const num = document.createElement('span'); num.className = 'h-num'; num.textContent = `v${idx + 1}`;
-      const ts = document.createElement('span'); ts.className = 'h-ts'; ts.textContent = fmtHistoryTimestamp(fnStem);
-      const sz = document.createElement('span'); sz.className = 'h-size'; sz.textContent = fmtSize(b.size);
-      const dl = document.createElement('a'); dl.className = 'st-btn';
-      dl.textContent = '⬇'; dl.href = b.url; dl.setAttribute('download', `${baseName}-v${idx + 1}.zip`);
+      if (r.isCurrent) row.classList.add('lib-history-current');
+      row.tabIndex = 0;
+
+      // v# + current 라벨
+      const num = document.createElement('span');
+      num.className = 'h-num';
+      num.textContent = r.isCurrent ? `v${r.version} · current` : `v${r.version}`;
+
+      // 파일명 + 날짜시간 (두 줄로)
+      const meta2 = document.createElement('div'); meta2.className = 'h-meta';
+      const fname = document.createElement('div'); fname.className = 'h-fname'; fname.textContent = r.originalMapFilename;
+      const tsEl = document.createElement('div'); tsEl.className = 'h-ts'; tsEl.textContent = fmtIsoForDisplay(r.savedAt);
+      meta2.appendChild(fname); meta2.appendChild(tsEl);
+
+      // 다운로드
+      const dl = document.createElement('a');
+      dl.className = 'st-btn';
+      dl.textContent = '⬇';
+      if (r.downloadUrl) {
+        dl.href = r.downloadUrl;
+        dl.setAttribute('download', r.downloadName);
+      } else {
+        dl.style.opacity = '0.4';
+        dl.style.pointerEvents = 'none';
+      }
       dl.title = 'Download this version';
-      row.appendChild(num); row.appendChild(ts); row.appendChild(sz); row.appendChild(dl);
+      dl.onclick = (e) => e.stopPropagation();  // 행 클릭과 분리
+
+      row.appendChild(num); row.appendChild(meta2); row.appendChild(dl);
+
+      // 행 클릭 → 미리보기 갱신
+      row.addEventListener('click', () => {
+        if (activeRowEl) activeRowEl.classList.remove('lib-history-active');
+        row.classList.add('lib-history-active');
+        activeRowEl = row;
+        // current 면 main.json, history 면 zip 풀기
+        if (r.isCurrent) {
+          void renderMapPreview(previewCanvas, r.previewUrl).catch(() => {
+            drawMapPlaceholder(previewCanvas);
+          });
+        } else if (r.previewUrl) {
+          void renderMapPreviewFromZipUrl(previewCanvas, r.previewUrl).catch(() => {
+            drawMapPlaceholder(previewCanvas);
+          });
+        }
+      });
+
       host.appendChild(row);
+      if (r.isCurrent) {
+        row.classList.add('lib-history-active');
+        activeRowEl = row;
+      }
     });
   } catch (e) {
     host.innerHTML = `<div class="lib-detail-empty">Failed to load: ${(e as Error).message}</div>`;
@@ -1227,17 +1344,19 @@ async function uploadMapNewVersion(currentEntry: BlobItem, baseName: string, new
     const tick = (): void => { done++; progress.setPercent(Math.round((done / totalFiles) * 100)); };
 
     try {
-      // 1) 기존 original.zip 을 _history/<ISO>.zip 으로 보존
+      // 1) 기존 original.zip 을 _history/<ISO>.zip 으로 보존. 같은 ISO 를 versionHistory record 에 사용.
       const meta = mapMetaByPath.get(currentEntry.pathname);
       const existingOriginalUrl = meta?.originalZipUrl;
+      const backupIsoTs = new Date().toISOString();
+      let backedUp = false;
       if (existingOriginalUrl) {
         progress.setStage(`${baseName} — backing up current version`);
         const r = await fetch(existingOriginalUrl, { cache: 'reload' });
         if (!r.ok) throw new Error(`current original.zip fetch failed: ${r.status}`);
         const buf = await r.arrayBuffer();
-        const isoTs = new Date().toISOString();
-        const histFile = new File([buf], mapHistoryFilenameFor(baseName, isoTs), { type: 'application/zip' });
+        const histFile = new File([buf], mapHistoryFilenameFor(baseName, backupIsoTs), { type: 'application/zip' });
         await uploadAsset(token, 'maps', histFile);
+        backedUp = true;
         tick();
       } else {
         // 기존 original.zip 이 없는 (구버전) 맵 — history 백업은 스킵
@@ -1272,9 +1391,21 @@ async function uploadMapNewVersion(currentEntry: BlobItem, baseName: string, new
         } catch { baselineVersion = 1; }
       }
       const newVersion = baselineVersion + 1;
+      // versionHistory 갱신 — 백업된 옛 active 의 record 를 push.
+      const prevHistory = meta?.versionHistory ?? [];
+      const newHistory = [...prevHistory];
+      if (backedUp) {
+        newHistory.push({
+          version: baselineVersion,
+          savedAt: backupIsoTs,
+          originalMapFilename: meta?.originalMapFilename ?? '(unknown)',
+        });
+      }
       const merged: MapMeta = {
         ...(meta ?? {}),
         version: newVersion,
+        versionHistory: newHistory,
+        savedAt: new Date().toISOString(),
         format: 'zip',
         originalMapFilename: parsed.mapFilename,
         originalZipUrl: newOriginalZipUrl,
@@ -1430,23 +1561,14 @@ function findTilesetForGid(tilesets: TilesetResolved[], gid: number): TilesetRes
   return best;
 }
 
-async function renderMapPreview(canvas: HTMLCanvasElement, mapUrl: string): Promise<void> {
-  const myToken = ++mapPreviewToken;
-  const r = await fetch(mapUrl, { cache: 'reload' });
-  if (!r.ok) throw new Error(`map fetch failed: ${r.status}`);
-  const map = await r.json() as TiledMap;
-  if (myToken !== mapPreviewToken) return;  // 사이에 다른 맵 선택 — 그리지 않음
-
-  const tilesets = await resolveTilesets(map, mapUrl);
-  if (myToken !== mapPreviewToken) return;
-
+/** 캔버스에 맵 픽셀 그리기 — fit-scale + 중앙 정렬. URL fetch 와 ZIP 모두에서 공유. */
+function drawTiledMapToCanvas(canvas: HTMLCanvasElement, map: TiledMap, tilesets: TilesetResolved[]): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#0e1014';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // 맵 픽셀 크기 → 캔버스 안에 맞춰 스케일 + 중앙 정렬
   const pixelW = map.width * map.tilewidth;
   const pixelH = map.height * map.tileheight;
   const scale = Math.min(canvas.width / pixelW, canvas.height / pixelH);
@@ -1461,7 +1583,7 @@ async function renderMapPreview(canvas: HTMLCanvasElement, mapUrl: string): Prom
     if (layer.type !== 'tilelayer') continue;
     if (layer.visible === false) continue;
     const data = layer.data;
-    if (!Array.isArray(data)) continue;  // base64+zlib 등은 이 버전에선 지원 X
+    if (!Array.isArray(data)) continue;
     const lw = layer.width ?? map.width;
     const lh = layer.height ?? map.height;
     for (let i = 0; i < lw * lh; i++) {
@@ -1482,6 +1604,73 @@ async function renderMapPreview(canvas: HTMLCanvasElement, mapUrl: string): Prom
     }
   }
   ctx.restore();
+}
+
+async function renderMapPreview(canvas: HTMLCanvasElement, mapUrl: string): Promise<void> {
+  const myToken = ++mapPreviewToken;
+  const r = await fetch(mapUrl, { cache: 'reload' });
+  if (!r.ok) throw new Error(`map fetch failed: ${r.status}`);
+  const map = await r.json() as TiledMap;
+  if (myToken !== mapPreviewToken) return;
+  const tilesets = await resolveTilesets(map, mapUrl);
+  if (myToken !== mapPreviewToken) return;
+  drawTiledMapToCanvas(canvas, map, tilesets);
+}
+
+/** ZIP 파일(원본) 에서 풀어서 캔버스에 그림. history 행 클릭 시 사용. */
+async function renderMapPreviewFromZipUrl(canvas: HTMLCanvasElement, zipUrl: string): Promise<void> {
+  const myToken = ++mapPreviewToken;
+  const r = await fetch(zipUrl, { cache: 'force-cache' });
+  if (!r.ok) throw new Error(`history zip fetch failed: ${r.status}`);
+  const blob = await r.blob();
+  if (myToken !== mapPreviewToken) return;
+  const file = new File([blob], 'history.zip', { type: 'application/zip' });
+  const parsed = await parseMapZip(file);
+  if (myToken !== mapPreviewToken) return;
+
+  // 메인 맵 JSON 파싱
+  const map = JSON.parse(await parsed.mapFile.text()) as TiledMap;
+  // 사이드 파일을 이름으로 매핑
+  const sidesByName = new Map<string, File>();
+  for (const f of parsed.sideFiles) sidesByName.set(f.name, f);
+
+  // tilesets resolve — zip 안 파일에서 직접 읽음
+  const tilesets: TilesetResolved[] = [];
+  for (const ts of map.tilesets) {
+    let def: typeof ts = ts;
+    if (ts.source) {
+      const tsBasename = ts.source.split('/').pop()?.replace(/\.tsx$/i, '.tsj') ?? ts.source;
+      const tsFile = sidesByName.get(tsBasename);
+      if (!tsFile) continue;
+      const tsJson = JSON.parse(await tsFile.text()) as typeof ts;
+      def = { ...tsJson, firstgid: ts.firstgid };
+    }
+    if (!def.image) continue;
+    const imgBasename = def.image.split('/').pop() ?? def.image;
+    const imgFile = sidesByName.get(imgBasename);
+    if (!imgFile) continue;
+    const objUrl = URL.createObjectURL(imgFile);
+    try {
+      const img = await loadImageAsync(objUrl);
+      const tw = def.tilewidth ?? map.tilewidth;
+      const th = def.tileheight ?? map.tileheight;
+      const iw = def.imagewidth ?? img.naturalWidth;
+      const ih = def.imageheight ?? img.naturalHeight;
+      const cols = def.columns ?? Math.floor(iw / tw);
+      tilesets.push({
+        firstgid: def.firstgid,
+        tilewidth: tw, tileheight: th,
+        imagewidth: iw, imageheight: ih,
+        columns: cols, img,
+      });
+    } finally {
+      // img.src 가 이미 로드됐으므로 object URL 해제 OK (캔버스는 ImageBitmap 데이터를 유지)
+      URL.revokeObjectURL(objUrl);
+    }
+  }
+  if (myToken !== mapPreviewToken) return;
+  tilesets.sort((a, b) => a.firstgid - b.firstgid);
+  drawTiledMapToCanvas(canvas, map, tilesets);
 }
 
 // ===== Audio detail =====
@@ -2686,7 +2875,9 @@ async function uploadZipMap(
       const meta: MapMeta = {
         id: assetId,
         name: displayName,
-        version: 1,  // 첫 업로드
+        version: 1,
+        versionHistory: [],
+        savedAt: new Date().toISOString(),
         format: 'zip',
         originalMapFilename: parsed.mapFilename,
         originalZipUrl,
