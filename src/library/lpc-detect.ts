@@ -43,37 +43,45 @@ export type LPCAction = keyof typeof ANIMATION_CONFIGS;
 
 const ALPHA_THRESHOLD = 16;       // 0~255. 매우 옅은 잔여 픽셀 무시
 
-/** PNG File → 사용 가능한 액션 목록. 시트가 표준 LPC 가 아니면 [] 또는 detected 결과만. */
+/** PNG File → 사용 가능한 액션 목록.
+ *  - 표준(832×3456): 그대로 검출.
+ *  - 오버사이즈(예: 1664×4992): 큰 무기 프레임 때문에 확장된 시트. 좌상단의 표준 영역에서 검출.
+ *  - 가로/세로가 standard 의 정수배라고 가정 (LPC 생성기 출력은 64 픽셀 단위). */
 export async function detectActionsFromFile(file: File): Promise<{
   actions: LPCAction[];
   width: number;
   height: number;
-  standard: boolean;        // 832×3456 표준 시트인가
+  standard: boolean;        // 표준 (832×3456) 또는 그 정수배인가
+  variant: 'standard' | 'oversize';
 }> {
   const url = URL.createObjectURL(file);
   try {
     const img = await loadImage(url);
     const w = img.naturalWidth, h = img.naturalHeight;
-    const standard = w === SHEET_W && h === SHEET_H;
-    if (!standard) {
-      // 표준이 아니면 검출 불가 — 빈 목록 반환
-      return { actions: [], width: w, height: h, standard };
-    }
 
-    // ImageData 추출
+    // 좌상단에 표준 영역이 들어갈 수 있는지 (오버사이즈도 받아들임)
+    const isAcceptable = w >= SHEET_W && h >= SHEET_H
+      && (w % FRAME_SIZE === 0) && (h % FRAME_SIZE === 0);
+    if (!isAcceptable) {
+      return { actions: [], width: w, height: h, standard: false, variant: 'standard' };
+    }
+    const variant = (w === SHEET_W && h === SHEET_H) ? 'standard' : 'oversize';
+
+    // ImageData 추출 — 표준 영역만 (오버사이즈여도 표준 액션은 여기 있음)
     const cnv = document.createElement('canvas');
-    cnv.width = w; cnv.height = h;
+    cnv.width = SHEET_W; cnv.height = SHEET_H;
     const ctx = cnv.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return { actions: [], width: w, height: h, standard };
+    if (!ctx) return { actions: [], width: w, height: h, standard: true, variant };
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(img, 0, 0);
-    const data = ctx.getImageData(0, 0, w, h).data;
+    // 큰 시트의 좌상단 SHEET_W × SHEET_H 만 잘라 그림
+    ctx.drawImage(img, 0, 0, SHEET_W, SHEET_H, 0, 0, SHEET_W, SHEET_H);
+    const data = ctx.getImageData(0, 0, SHEET_W, SHEET_H).data;
 
     const actions: LPCAction[] = [];
     for (const [name, cfg] of Object.entries(ANIMATION_CONFIGS) as [LPCAction, AnimationConfig][]) {
-      if (hasAnyContent(data, w, cfg)) actions.push(name);
+      if (hasAnyContent(data, SHEET_W, cfg)) actions.push(name);
     }
-    return { actions, width: w, height: h, standard };
+    return { actions, width: w, height: h, standard: true, variant };
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -83,17 +91,17 @@ export async function detectActionsFromFile(file: File): Promise<{
 export async function detectActionsFromUrl(url: string): Promise<LPCAction[]> {
   const img = await loadImage(url);
   const w = img.naturalWidth, h = img.naturalHeight;
-  if (w !== SHEET_W || h !== SHEET_H) return [];
+  if (w < SHEET_W || h < SHEET_H) return [];
   const cnv = document.createElement('canvas');
-  cnv.width = w; cnv.height = h;
+  cnv.width = SHEET_W; cnv.height = SHEET_H;
   const ctx = cnv.getContext('2d', { willReadFrequently: true });
   if (!ctx) return [];
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(img, 0, 0);
-  const data = ctx.getImageData(0, 0, w, h).data;
+  ctx.drawImage(img, 0, 0, SHEET_W, SHEET_H, 0, 0, SHEET_W, SHEET_H);
+  const data = ctx.getImageData(0, 0, SHEET_W, SHEET_H).data;
   const out: LPCAction[] = [];
   for (const [name, cfg] of Object.entries(ANIMATION_CONFIGS) as [LPCAction, AnimationConfig][]) {
-    if (hasAnyContent(data, w, cfg)) out.push(name);
+    if (hasAnyContent(data, SHEET_W, cfg)) out.push(name);
   }
   return out;
 }

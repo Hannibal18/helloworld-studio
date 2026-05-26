@@ -955,7 +955,7 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
   try {
     const det = await detectActionsFromFile(file);
     if (!det.standard) {
-      warnEl.textContent = `Not a standard 832×3456 LPC sheet (got ${det.width}×${det.height}). Upload disabled.`;
+      warnEl.textContent = `Not a valid LPC sheet (got ${det.width}×${det.height}). Expected at least 832×3456, multiple of 64.`;
       warnEl.classList.remove('hidden');
       actionsEl.innerHTML = '';
     } else {
