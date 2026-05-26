@@ -1392,33 +1392,36 @@ function playFromAnimFile(actionName: string, url: string, canvas: HTMLCanvasEle
 }
 
 async function handleFiles(files: FileList | File[]): Promise<void> {
+  // 사용자가 업로드 도중 탭을 옮겨도 시작 시점의 카테고리로 일관되게 처리한다.
+  const startCat = activeCat;
   const arr = Array.from(files);
   for (const f of arr) {
     const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
-    if (!EXT_BY_CAT[activeCat].includes(ext)) {
+    if (!EXT_BY_CAT[startCat].includes(ext)) {
       showToast(`${f.name} — extension .${ext} not allowed in this tab`, 'err', 3000);
       continue;
     }
-    if (activeCat === 'characters') {
+    if (startCat === 'characters') {
       if (isLpcZipFile(f)) {
         await uploadCharacterZipWithModal(f);
       } else {
         await uploadCharacterWithModal(f);
       }
-    } else if (activeCat === 'bgm') {
+    } else if (startCat === 'bgm') {
       await uploadAudioWithModal(f);
     } else {
-      await uploadOne(f, f.name);
+      await uploadOne(f, f.name, startCat);
     }
   }
   refreshList();
 }
 
-/** Maps/Audio 또는 캐릭터(확정된 이름) 한 파일 업로드 + 진행률 표시. */
-async function uploadOne(file: File, displayName: string, opts?: {
+/** Maps/Audio 또는 캐릭터(확정된 이름) 한 파일 업로드 + 진행률 표시.
+ *  cat 은 호출 시점에 고정 — 업로드 중 사용자가 탭을 옮겨도 엉뚱한 카테고리로 가지 않도록. */
+async function uploadOne(file: File, displayName: string, cat: Category, opts?: {
   characterActions?: LPCAction[];
-  characterBaseName?: string;     // 'name' (확장자 없음, 파일명용)
-  characterDisplayName?: string;  // meta.name (사람이 보는 이름)
+  characterBaseName?: string;
+  characterDisplayName?: string;
   characterBody?: BodyType;
   characterRace?: string;
 }): Promise<void> {
@@ -1433,7 +1436,7 @@ async function uploadOne(file: File, displayName: string, opts?: {
   nameEl.textContent = displayName;
 
   try {
-    await uploadAsset(token, activeCat, file, (loaded, total) => {
+    await uploadAsset(token, cat, file, (loaded, total) => {
       const p = total > 0 ? Math.round((loaded / total) * 100) : 0;
       bar.style.width = p + '%';
       pct.textContent = p + '%';
@@ -1450,7 +1453,7 @@ async function uploadOne(file: File, displayName: string, opts?: {
         detectedAt: new Date().toISOString(),
       }, null, 2);
       const metaFile = new File([metaBody], metaName, { type: 'application/json' });
-      await uploadAsset(token, activeCat, metaFile);
+      await uploadAsset(token, cat, metaFile);
     }
     row.classList.add('ok');
     pct.textContent = 'OK';
@@ -1775,7 +1778,7 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
       const cleaned = raw.replace(/[\/\\]/g, '_').replace(/\.png$/i, '');
       const newFile = new File([file], `${cleaned}.png`, { type: file.type });
       cleanup();
-      await uploadOne(newFile, `${cleaned}.png`, {
+      await uploadOne(newFile, `${cleaned}.png`, 'characters', {
         characterActions: actions,
         characterBaseName: cleaned,
         characterDisplayName: raw,
