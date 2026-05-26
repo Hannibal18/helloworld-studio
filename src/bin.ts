@@ -37,6 +37,41 @@ export function loadBuiltinAssets(): void {
   notify();
 }
 
+// 라이브러리(Vercel Blob)에서 업로드된 자산을 추가로 로드.
+// 토큰 없거나 백엔드 미구성이면 조용히 스킵 — builtin 만으로도 정상 동작.
+export async function loadLibraryAssets(): Promise<void> {
+  let token: string | null;
+  try { token = localStorage.getItem('studio:library:token'); }
+  catch { token = null; }
+  if (!token) return;
+  try {
+    const r = await fetch('/api/list?category=all', {
+      headers: { 'x-studio-token': token },
+    });
+    if (!r.ok) return;
+    const j = (await r.json()) as { blobs: Array<{ pathname: string; url: string }> };
+    let mapCount = 0, bgmCount = 0;
+    for (const b of j.blobs) {
+      const ext = b.pathname.split('.').pop()?.toLowerCase() ?? '';
+      const baseName = b.pathname.split('/').slice(1).join('/').replace(/\.[^.]+$/, '');
+      if (['json', 'tmj'].includes(ext) && b.pathname.startsWith('maps/')) {
+        state.assets.push({ kind: 'map', id: uid('a'), source: 'upload', name: baseName, url: b.url });
+        mapCount++;
+      } else if (['mp3', 'ogg', 'wav', 'm4a'].includes(ext) && b.pathname.startsWith('bgm/')) {
+        state.assets.push({ kind: 'bgm', id: uid('a'), source: 'upload', name: baseName, url: b.url });
+        bgmCount++;
+      }
+      // .tsj/.png 등 보조 파일은 빈에 노출 X — map JSON 이 내부적으로 fetch.
+    }
+    if (mapCount + bgmCount > 0) {
+      showToast(`📚 라이브러리: 맵 ${mapCount}, BGM ${bgmCount} 로드`);
+    }
+    notify();
+  } catch (e) {
+    console.warn('[library] 로드 실패', e);
+  }
+}
+
 export function initBinUI(): void {
   const tabs = document.querySelectorAll<HTMLButtonElement>('.st-tab');
   tabs.forEach((tab) => {

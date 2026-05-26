@@ -75,6 +75,47 @@ public/
   audio/bgm/      # BGM 4트랙
 ```
 
+## 📚 라이브러리 (Vercel Blob 백엔드)
+
+스튜디오 우상단 **📚 라이브러리** 링크 → `/library.html` 에서 맵·BGM 을 영구 업로드.
+업로드된 자산은 다음 스튜디오 부팅 시 자동으로 빈에 합류해 컷씬에 바로 쓸 수 있다.
+
+### 한 번만 셋업
+
+1. **Vercel Blob 스토어 만들기** (대시보드 → 프로젝트 → Storage → Create → Blob)
+   - 자동으로 `BLOB_READ_WRITE_TOKEN` 환경변수 주입됨.
+2. **비밀번호 환경변수 추가**
+   - Settings → Environment Variables → `STUDIO_PASSWORD` = (원하는 비번)
+   - Production / Preview / Development 전부 체크.
+3. **재배포** — 환경변수 반영 위해 한 번 deploy 트리거.
+
+### 사용 흐름
+
+1. `/library.html` 첫 접속 → 비번 모달 입력 (localStorage 캐싱돼서 이후 자동)
+2. 탭에서 맵 / BGM 선택 → 파일 선택 또는 드래그&드롭
+3. 업로드 진행률 표시, 완료되면 목록에 추가
+4. 항목 🗑 버튼으로 삭제 가능
+5. 스튜디오로 돌아가면 빈에 라이브러리 자산이 자동 포함됨 (`📚 라이브러리: 맵 N, BGM M 로드` 토스트)
+
+### 맵 업로드 주의
+
+Tiled 맵이 **외부 타일셋(.tsj)** 을 참조하면 `.tsj` 와 그 안의 `.png` 도 같이 업로드해야 한다.
+파일명만 맞추면 같은 Blob 폴더(`maps/`) 안에서 자동으로 해석된다.
+**내장 타일셋** 으로 export 한 맵은 .json 한 개로 완결되므로 가장 편함.
+
+## 배포 (Vercel)
+
+```bash
+# CLI 로 한 번에:
+vercel link
+vercel deploy --prod
+
+# 또는 GitHub 푸시 → Vercel 자동 배포
+```
+
+`@vercel/blob` 은 자동으로 Vercel Functions(`api/`) 에서 인식된다.
+런타임은 Node.js 기본값.
+
 ## 라이선스
 
 미정.

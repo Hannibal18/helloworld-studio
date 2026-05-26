@@ -1,7 +1,7 @@
 // 스튜디오 부트스트랩 — DOM 준비 → 모든 모듈 init → 상태 구독 → 매 프레임 BGM 동기화.
 
 import { state, notify, activeScene, subscribe, uid } from './state';
-import { loadBuiltinAssets, initBinUI, renderBin } from './bin';
+import { loadBuiltinAssets, loadLibraryAssets, initBinUI, renderBin } from './bin';
 import { initStage, screenToWorld, currentMap } from './stage';
 import { initTimeline, renderTimeline } from './timeline';
 import { initProps, renderProps } from './props';
@@ -31,6 +31,8 @@ ready(() => {
   });
 
   loadBuiltinAssets();
+  // 라이브러리(Blob) 에셋도 비동기 로드 — 토큰 없거나 백엔드 미배포면 무시.
+  void loadLibraryAssets();
 
   // localStorage 복원 — 빈 (builtin assets) 로드된 직후에 시도해야 자산 매칭됨.
   try {

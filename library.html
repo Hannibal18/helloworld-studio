@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>📚 라이브러리 · Helloworld Studio</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/quiple/galmuri/dist/galmuri.css" />
+    <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="/src/library/library.css" />
+  </head>
+  <body>
+    <header class="st-topbar">
+      <div class="st-topbar-left">
+        <strong class="st-brand">📚 라이브러리</strong>
+      </div>
+      <div class="st-topbar-right">
+        <a class="st-link" href="/">← 스튜디오</a>
+        <button id="btn-logout" class="st-btn" type="button" title="비번 잊고 다시 입력">🔑 재로그인</button>
+      </div>
+    </header>
+
+    <main class="lib-main">
+      <div class="lib-tabs">
+        <button class="lib-tab lib-tab-active" data-cat="maps">🗺 맵</button>
+        <button class="lib-tab" data-cat="bgm">🎵 BGM</button>
+      </div>
+
+      <div class="lib-upload-zone" id="upload-zone">
+        <input id="file-input" type="file" multiple class="hidden" />
+        <button id="btn-pick" class="st-btn st-btn-primary" type="button">📁 파일 선택</button>
+        <span class="lib-upload-hint">또는 여기로 드래그&드롭</span>
+      </div>
+
+      <div class="lib-progress" id="upload-progress"></div>
+
+      <ul class="lib-list" id="file-list">
+        <li class="lib-empty">로딩 중...</li>
+      </ul>
+    </main>
+
+    <!-- 비번 모달 -->
+    <div id="auth-modal" class="auth-modal hidden">
+      <div class="auth-box">
+        <h2>🔑 라이브러리 접근</h2>
+        <p>Vercel 환경변수 <code>STUDIO_PASSWORD</code> 에 설정한 비밀번호를 입력하세요.</p>
+        <input id="auth-input" type="password" placeholder="비밀번호" autocomplete="current-password" />
+        <div class="auth-actions">
+          <button id="auth-submit" class="st-btn st-btn-primary" type="button">입장</button>
+        </div>
+        <p id="auth-error" class="auth-error hidden"></p>
+      </div>
+    </div>
+
+    <div id="toast" class="st-toast hidden"></div>
+    <script type="module" src="/src/library/main.ts"></script>
+  </body>
+</html>
