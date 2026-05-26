@@ -621,12 +621,17 @@ html, body {
 }
 .lib-detail-history-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: 8px; align-items: center;
   padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+.lib-detail-history-row .h-num {
+  color: var(--text-mute);
+  font-weight: 600;
+  min-width: 22px;
 }
 .lib-detail-history-row .h-ts { color: var(--text); overflow-wrap: anywhere; }
 .lib-detail-history-row .h-size { color: var(--text-mute); }

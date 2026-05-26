@@ -1129,33 +1129,43 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
   }
 }
 
+/** 히스토리 파일명(ISO timestamp 의 ':' → '-' 형태) 을 사람 친화적 날짜로. */
+function fmtHistoryTimestamp(filenameStem: string): string {
+  // 'YYYY-MM-DDTHH-MM-SS.SSSZ' → 'YYYY-MM-DDTHH:MM:SS.SSSZ' 복원
+  const restored = filenameStem.replace(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/, '$1-$2-$3T$4:$5:$6');
+  const d = new Date(restored);
+  if (Number.isNaN(d.getTime())) return filenameStem;
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 async function renderMapHistory(host: HTMLElement, baseName: string): Promise<void> {
   host.innerHTML = '<div class="lib-detail-empty">Loading history…</div>';
   try {
     const all = await listAssets(token, 'maps');
     const prefix = `${mapFolderPrefix(baseName)}_history/`;
+    // 위에서부터 가장 오래된 것이 1번 — pathname ascending sort (ISO timestamp 가 사전순 = 시간순).
     const items = all
       .filter((b) => b.pathname.startsWith(prefix) && b.pathname.endsWith('.zip'))
-      .sort((a, b) => b.pathname.localeCompare(a.pathname));  // 최신 순
+      .sort((a, b) => a.pathname.localeCompare(b.pathname));
     if (items.length === 0) {
       host.innerHTML = '<div class="lib-detail-empty">No previous versions yet.</div>';
       return;
     }
     host.innerHTML = '';
-    for (const b of items) {
+    items.forEach((b, idx) => {
       const row = document.createElement('div');
       row.className = 'lib-detail-history-row';
-      // pathname 의 timestamp 부분 추출
-      const fn = b.pathname.slice(prefix.length).replace(/\.zip$/, '');
-      const restored = fn.replace(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/, '$1-$2-$3 $4:$5:$6');
-      const ts = document.createElement('span'); ts.className = 'h-ts'; ts.textContent = restored;
+      const fnStem = b.pathname.slice(prefix.length).replace(/\.zip$/, '');
+      const num = document.createElement('span'); num.className = 'h-num'; num.textContent = `v${idx + 1}`;
+      const ts = document.createElement('span'); ts.className = 'h-ts'; ts.textContent = fmtHistoryTimestamp(fnStem);
       const sz = document.createElement('span'); sz.className = 'h-size'; sz.textContent = fmtSize(b.size);
       const dl = document.createElement('a'); dl.className = 'st-btn';
-      dl.textContent = '⬇'; dl.href = b.url; dl.setAttribute('download', `${baseName}-${fn}.zip`);
+      dl.textContent = '⬇'; dl.href = b.url; dl.setAttribute('download', `${baseName}-v${idx + 1}.zip`);
       dl.title = 'Download this version';
-      row.appendChild(ts); row.appendChild(sz); row.appendChild(dl);
+      row.appendChild(num); row.appendChild(ts); row.appendChild(sz); row.appendChild(dl);
       host.appendChild(row);
-    }
+    });
   } catch (e) {
     host.innerHTML = `<div class="lib-detail-empty">Failed to load: ${(e as Error).message}</div>`;
   }
