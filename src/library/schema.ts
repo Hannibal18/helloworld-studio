@@ -37,7 +37,8 @@ export async function loadAllSchemas(token: string): Promise<void> {
       if (!m) return;
       const cat = m[1] as SchemaCat;
       try {
-        const r = await fetch(b.url);
+        // cache: 'reload' — 가변 메타라 브라우저 HTTP 캐시 우회하고 항상 revalidate.
+        const r = await fetch(b.url, { cache: 'reload' });
         if (!r.ok) return;
         const j = await r.json() as { fields?: FieldDef[]; updatedAt?: string };
         if (Array.isArray(j.fields)) {

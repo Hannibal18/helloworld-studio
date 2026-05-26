@@ -158,7 +158,7 @@ async function refreshList(): Promise<void> {
     if (activeCat === 'characters' && sidecars.length > 0) {
       await Promise.all(sidecars.map(async (s) => {
         try {
-          const r = await fetch(s.url);
+          const r = await fetch(s.url, { cache: 'reload' });
           if (!r.ok) return;
           const j = await r.json() as { actions?: LPCAction[]; body?: BodyType; name?: string; race?: string };
           const pngPath = s.pathname.replace(/\.meta\.json$/, '.png');

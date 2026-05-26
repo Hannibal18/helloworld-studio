@@ -35,6 +35,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         if (!ext || !allowed.includes(ext)) {
           throw new Error(`확장자 ${ext} 는 업로드 불가`);
         }
+        // 가변 파일(메타, 스키마)은 캐시 OFF — 덮어써도 fetch 가 즉시 최신값.
+        // 불변 파일(맵 PNG, BGM 등)은 기본 캐시(1년) 유지.
+        const isMutable = pathname.endsWith('.meta.json') || pathname.startsWith('_schemas/');
         return {
           allowedContentTypes: [
             'application/json', 'application/octet-stream', 'text/plain',
@@ -42,7 +45,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
             'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/mp4', 'audio/x-m4a',
           ],
           addRandomSuffix: false,
-          allowOverwrite: true,   // 메타 수정 시 같은 pathname 으로 덮어쓰기
+          allowOverwrite: true,
+          cacheControlMaxAge: isMutable ? 0 : undefined,
           tokenPayload: JSON.stringify({ pathname }),
         };
       },
