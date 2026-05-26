@@ -166,12 +166,44 @@
   font-family: var(--font-mono);
   color: var(--text);
 }
+.lib-detail-empty {
+  font-size: var(--fs-sm);
+  color: var(--text-mute);
+}
+.lib-detail-form {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.lib-field {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.lib-field input, .lib-field select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 7px;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+.lib-field input:focus, .lib-field select:focus { outline: none; border-color: var(--accent); }
+.lib-detail-meta-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 4px;
+}
 .lib-detail-sub {
-  margin: 4px 0 0;
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
   color: var(--text-mute);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.lib-detail-meta-row .st-btn { padding: 3px 12px; font-size: var(--fs-xs); }
 .lib-detail-actions-title {
   margin-top: 12px;
   font-size: var(--fs-xs);

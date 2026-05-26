@@ -44,8 +44,26 @@
         <aside class="lib-detail hidden" id="char-detail">
           <canvas id="detail-preview" class="lib-detail-preview" width="256" height="256"></canvas>
           <div class="lib-detail-info">
-            <h3 id="detail-name">No character selected</h3>
-            <p id="detail-sub" class="lib-detail-sub"></p>
+            <div id="detail-empty" class="lib-detail-empty">No character selected</div>
+            <div id="detail-form" class="lib-detail-form hidden">
+              <label class="lib-field">Name
+                <input id="detail-name" type="text" autocomplete="off" />
+              </label>
+              <label class="lib-field">Body
+                <select id="detail-body">
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                  <option value="none">None / Other</option>
+                </select>
+              </label>
+              <label class="lib-field">Race
+                <input id="detail-race" type="text" placeholder="human" autocomplete="off" />
+              </label>
+              <div class="lib-detail-meta-row">
+                <span id="detail-sub" class="lib-detail-sub"></span>
+                <button id="detail-save" class="st-btn st-btn-primary" type="button" disabled>Save</button>
+              </div>
+            </div>
             <div class="lib-detail-actions-title">Animations</div>
             <div id="detail-actions" class="lib-detail-actions"></div>
           </div>
@@ -82,6 +100,9 @@
                 <option value="female">Female</option>
                 <option value="none">None / Other</option>
               </select>
+            </label>
+            <label class="cu-name-label">Race / species
+              <input id="cu-race" type="text" placeholder="human" autocomplete="off" />
             </label>
             <div class="cu-actions-label">Detected actions</div>
             <div id="cu-actions" class="lib-tags"></div>

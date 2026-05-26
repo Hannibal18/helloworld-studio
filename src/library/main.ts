@@ -23,7 +23,13 @@ let token = '';
 let activeCat: Category = 'maps';
 
 type BodyType = 'male' | 'female' | 'none';
-interface CharMeta { actions: LPCAction[]; body?: BodyType; uploadedAt?: string; }
+interface CharMeta {
+  actions: LPCAction[];
+  body?: BodyType;
+  name?: string;        // 표시용 이름 (파일명과 분리)
+  race?: string;        // 종족 — 자유 텍스트 (human, lizard, wolfman, ...)
+  uploadedAt?: string;
+}
 
 // pathname → 캐릭터 메타 (액션, 성별 등). sidecar .meta.json 에서 채움.
 const charMetaByPath = new Map<string, CharMeta>();
@@ -130,12 +136,14 @@ async function refreshList(): Promise<void> {
         try {
           const r = await fetch(s.url);
           if (!r.ok) return;
-          const j = await r.json() as { actions?: LPCAction[]; body?: BodyType };
+          const j = await r.json() as { actions?: LPCAction[]; body?: BodyType; name?: string; race?: string };
           const pngPath = s.pathname.replace(/\.meta\.json$/, '.png');
           if (Array.isArray(j.actions)) {
             charMetaByPath.set(pngPath, {
               actions: j.actions,
               body: j.body,
+              name: j.name,
+              race: j.race,
             });
           }
         } catch { /* 무시 */ }
@@ -178,6 +186,9 @@ function charBaseName(pathname: string): string {
   // characters/foo.png → foo
   return shortName(pathname).replace(/\.[^.]+$/, '');
 }
+function displayName(it: BlobItem): string {
+  return charMetaByPath.get(it.pathname)?.name || charBaseName(it.pathname);
+}
 
 function makeItem(it: BlobItem): HTMLElement {
   const li = document.createElement('li');
@@ -207,7 +218,7 @@ function makeItem(it: BlobItem): HTMLElement {
     // Characters 표 형식: name | body | date
     const nm = document.createElement('div');
     nm.className = 'name';
-    nm.textContent = charBaseName(it.pathname);
+    nm.textContent = displayName(it);
 
     const body = document.createElement('div');
     body.className = 'body';
@@ -237,7 +248,8 @@ function makeItem(it: BlobItem): HTMLElement {
   del.className = 'del'; del.textContent = '×'; del.title = 'Delete';
   del.addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (!confirm(`Delete "${shortName(it.pathname)}"?`)) return;
+    const confirmMsg = activeCat === 'characters' ? 'Delete this character?' : 'Delete this file?';
+    if (!confirm(confirmMsg)) return;
     try {
       await deleteAsset(token, it.url);
       if (activeCat === 'characters') {
@@ -269,29 +281,87 @@ function selectChar(it: BlobItem): void {
 }
 
 function renderDetail(it: BlobItem | null): void {
-  const nameEl = document.getElementById('detail-name')!;
+  const emptyEl = document.getElementById('detail-empty')!;
+  const formEl = document.getElementById('detail-form')!;
+  const nameInput = document.getElementById('detail-name') as HTMLInputElement;
+  const bodySel = document.getElementById('detail-body') as HTMLSelectElement;
+  const raceInput = document.getElementById('detail-race') as HTMLInputElement;
   const subEl = document.getElementById('detail-sub')!;
+  const saveBtn = document.getElementById('detail-save') as HTMLButtonElement;
   const actionsEl = document.getElementById('detail-actions')!;
   const canvas = document.getElementById('detail-preview') as HTMLCanvasElement;
 
   stopAnimation();
   if (!it) {
-    nameEl.textContent = 'No character selected';
-    subEl.textContent = '';
+    emptyEl.classList.remove('hidden');
+    formEl.classList.add('hidden');
     actionsEl.innerHTML = '';
     const ctx = canvas.getContext('2d');
     if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
     return;
   }
+  emptyEl.classList.add('hidden');
+  formEl.classList.remove('hidden');
 
   const meta = charMetaByPath.get(it.pathname);
-  nameEl.textContent = charBaseName(it.pathname);
-  subEl.textContent = `${bodyLabel(meta?.body)} · ${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
+  // 폼 초기값 — meta 가 없으면 파일명 기반 기본
+  const initialName = meta?.name ?? charBaseName(it.pathname);
+  const initialBody = meta?.body ?? 'none';
+  const initialRace = meta?.race ?? '';
+  nameInput.value = initialName;
+  bodySel.value = initialBody;
+  raceInput.value = initialRace;
+  subEl.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
+  saveBtn.disabled = true;
+
+  // 변경 감지
+  const onChange = (): void => {
+    const changed = nameInput.value.trim() !== initialName
+      || bodySel.value !== initialBody
+      || raceInput.value.trim() !== initialRace;
+    saveBtn.disabled = !changed || nameInput.value.trim().length === 0;
+  };
+  nameInput.oninput = onChange;
+  bodySel.onchange = onChange;
+  raceInput.oninput = onChange;
+
+  saveBtn.onclick = async (): Promise<void> => {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      const newMeta: CharMeta = {
+        actions: meta?.actions ?? [],
+        body: bodySel.value as BodyType,
+        name: nameInput.value.trim(),
+        race: raceInput.value.trim() || undefined,
+      };
+      const metaName = `${charBaseName(it.pathname)}.meta.json`;
+      const metaBody = JSON.stringify({
+        schema: 1,
+        source: 'lpc',
+        body: newMeta.body,
+        name: newMeta.name,
+        race: newMeta.race,
+        actions: newMeta.actions,
+        savedAt: new Date().toISOString(),
+      }, null, 2);
+      const metaFile = new File([metaBody], metaName, { type: 'application/json' });
+      await uploadAsset(token, 'characters', metaFile);
+      charMetaByPath.set(it.pathname, newMeta);
+      showToast('Saved');
+      saveBtn.textContent = 'Save';
+      // 리스트 다시 그리기 — 표시 이름/성별이 바뀜
+      refreshList();
+    } catch (e) {
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      showToast(msg, 'err');
+      saveBtn.textContent = 'Save';
+      saveBtn.disabled = false;
+    }
+  };
 
   // 초기 프레임: idle down
-  loadSheet(it.url, (img) => {
-    drawIdleFrame(canvas, img);
-  });
+  loadSheet(it.url, (img) => drawIdleFrame(canvas, img));
 
   // 액션 버튼
   actionsEl.innerHTML = '';
@@ -388,8 +458,10 @@ async function handleFiles(files: FileList | File[]): Promise<void> {
 /** Maps/Audio 또는 캐릭터(확정된 이름) 한 파일 업로드 + 진행률 표시. */
 async function uploadOne(file: File, displayName: string, opts?: {
   characterActions?: LPCAction[];
-  characterBaseName?: string;     // 'name' (확장자 없음)
+  characterBaseName?: string;     // 'name' (확장자 없음, 파일명용)
+  characterDisplayName?: string;  // meta.name (사람이 보는 이름)
   characterBody?: BodyType;
+  characterRace?: string;
 }): Promise<void> {
   const progressEl = document.getElementById('upload-progress')!;
   const row = document.createElement('div');
@@ -413,6 +485,8 @@ async function uploadOne(file: File, displayName: string, opts?: {
         schema: 1,
         source: 'lpc',
         body: opts.characterBody ?? 'none',
+        name: opts.characterDisplayName ?? opts.characterBaseName,
+        race: opts.characterRace || undefined,
         actions: opts.characterActions,
         detectedAt: new Date().toISOString(),
       }, null, 2);
@@ -437,6 +511,7 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
   const previewC = document.getElementById('cu-preview') as HTMLCanvasElement;
   const nameInput = document.getElementById('cu-name') as HTMLInputElement;
   const bodySel = document.getElementById('cu-body') as HTMLSelectElement;
+  const raceInput = document.getElementById('cu-race') as HTMLInputElement;
   const actionsEl = document.getElementById('cu-actions')!;
   const warnEl = document.getElementById('cu-warn')!;
   const fnameEl = document.getElementById('cu-filename')!;
@@ -447,6 +522,7 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
   const baseFromFile = file.name.replace(/\.[^.]+$/, '');
   nameInput.value = baseFromFile;
   bodySel.value = 'male';
+  raceInput.value = '';
   fnameEl.textContent = file.name;
   warnEl.classList.add('hidden');
   actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">analyzing…</span>';
@@ -507,7 +583,9 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
       await uploadOne(newFile, `${cleaned}.png`, {
         characterActions: actions,
         characterBaseName: cleaned,
+        characterDisplayName: raw,           // 사용자가 원본 그대로 입력한 이름
         characterBody: bodySel.value as BodyType,
+        characterRace: raceInput.value.trim(),
       });
     };
     submitBtn.onclick = () => { void doUpload(); };

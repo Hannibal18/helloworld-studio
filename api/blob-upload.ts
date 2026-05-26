@@ -42,6 +42,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
             'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/mp4', 'audio/x-m4a',
           ],
           addRandomSuffix: false,
+          allowOverwrite: true,   // 메타 수정 시 같은 pathname 으로 덮어쓰기
           tokenPayload: JSON.stringify({ pathname }),
         };
       },
