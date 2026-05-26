@@ -49,7 +49,7 @@
         <ul class="lib-list" id="file-list">
           <li class="lib-empty">Loading…</li>
         </ul>
-        <!-- Characters 탭일 때만 활성. 캐릭터 선택 시 미리보기 + 액션 -->
+        <!-- Characters 탭: 미리보기 + 액션 -->
         <aside class="lib-detail hidden" id="char-detail">
           <canvas id="detail-preview" class="lib-detail-preview" width="256" height="256"></canvas>
           <div class="lib-detail-info">
@@ -77,6 +77,63 @@
             </div>
             <div class="lib-detail-actions-title">Animations</div>
             <div id="detail-actions" class="lib-detail-actions"></div>
+          </div>
+        </aside>
+
+        <!-- Maps 탭: 메타 + 통계 + 미리보기 시도 -->
+        <aside class="lib-detail hidden" id="map-detail">
+          <canvas id="map-preview" class="lib-detail-preview" width="256" height="256"></canvas>
+          <div class="lib-detail-info">
+            <div id="map-empty" class="lib-detail-empty">No map selected</div>
+            <div id="map-form" class="lib-detail-form hidden">
+              <label class="lib-field">Name
+                <input id="map-name" type="text" autocomplete="off" />
+              </label>
+              <div id="map-stats" class="lib-detail-stats"></div>
+              <div id="map-custom-fields" class="lib-detail-custom"></div>
+              <p id="map-warn" class="auth-error hidden"></p>
+              <div class="lib-detail-meta-row">
+                <span id="map-sub" class="lib-detail-sub"></span>
+                <button id="map-save" class="st-btn st-btn-primary" type="button" disabled>Save</button>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <!-- Audio 탭: 재생기 + 메타 + 기본 볼륨/페이드 -->
+        <aside class="lib-detail hidden" id="audio-detail">
+          <div class="lib-detail-preview lib-audio-player">
+            <audio id="audio-player" controls preload="none"></audio>
+          </div>
+          <div class="lib-detail-info">
+            <div id="audio-empty" class="lib-detail-empty">No audio selected</div>
+            <div id="audio-form" class="lib-detail-form hidden">
+              <label class="lib-field">Name
+                <input id="audio-name" type="text" autocomplete="off" />
+              </label>
+              <label class="lib-field">Default volume
+                <div class="range-with-val">
+                  <input id="audio-volume" type="range" min="0" max="1" step="0.05" />
+                  <span id="audio-volume-val">0.70</span>
+                </div>
+              </label>
+              <label class="lib-field">Fade in (sec)
+                <input id="audio-fadein" type="number" min="0" max="10" step="0.1" />
+              </label>
+              <label class="lib-field">Fade out (sec)
+                <input id="audio-fadeout" type="number" min="0" max="10" step="0.1" />
+              </label>
+              <label class="lib-field lib-field-inline">
+                <input id="audio-loop" type="checkbox" />
+                <span>Loop by default</span>
+              </label>
+              <div id="audio-custom-fields" class="lib-detail-custom"></div>
+              <p id="audio-warn" class="auth-error hidden"></p>
+              <div class="lib-detail-meta-row">
+                <span id="audio-sub" class="lib-detail-sub"></span>
+                <button id="audio-save" class="st-btn st-btn-primary" type="button" disabled>Save</button>
+              </div>
+            </div>
           </div>
         </aside>
       </div>

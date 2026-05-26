@@ -43,13 +43,23 @@ interface CharMeta {
   totalSize?: number;              // ZIP 의 모든 파일 합산 크기 (표시용)
 }
 
-// pathname → 캐릭터 메타 (액션, 성별 등). sidecar .meta.json 에서 채움.
+// pathname → 자산 메타 (캐릭터/맵/오디오 공용 — 카테고리별로 사용하는 필드만 채움).
 const charMetaByPath = new Map<string, CharMeta>();
+interface MapMeta { name?: string; fields?: Record<string, string>; }
+interface AudioMeta {
+  name?: string; volume?: number; fadeIn?: number; fadeOut?: number; loop?: boolean;
+  fields?: Record<string, string>;
+}
+const mapMetaByPath = new Map<string, MapMeta>();
+const audioMetaByPath = new Map<string, AudioMeta>();
+
 // URL → 이미 로드된 LPC 시트 (썸네일 + 미리보기 렌더용). 시트가 큰 편이라 캐싱 필수.
 const sheetByUrl = new Map<string, HTMLImageElement | 'loading' | 'error'>();
-// 현재 detail 패널에서 보여주는 캐릭터.
+// 현재 detail 패널에서 보여주는 항목.
 let selectedChar: BlobItem | null = null;
-let playingAction: LPCAction | null = null;
+let selectedMap: BlobItem | null = null;
+let selectedAudio: BlobItem | null = null;
+let playingAction: string | null = null;
 let playRafId = 0;
 
 function showToast(msg: string, kind: 'ok' | 'err' = 'ok', ms = 2200): void {
@@ -115,7 +125,9 @@ function emptyLabel(cat: Category): string {
 
 function setContentMode(): void {
   const content = document.getElementById('lib-content')!;
-  const detail = document.getElementById('char-detail')!;
+  const charDetail = document.getElementById('char-detail')!;
+  const mapDetail = document.getElementById('map-detail')!;
+  const audioDetail = document.getElementById('audio-detail')!;
   const upload = document.getElementById('upload-zone')!;
   const settings = document.getElementById('settings-panel')!;
 
@@ -124,8 +136,9 @@ function setContentMode(): void {
     upload.classList.add('hidden');
     content.classList.add('hidden');
     settings.classList.remove('hidden');
-    detail.classList.add('hidden');
-    selectedChar = null;
+    charDetail.classList.add('hidden');
+    mapDetail.classList.add('hidden');
+    audioDetail.classList.add('hidden');
     stopAnimation();
     return;
   }
@@ -133,14 +146,21 @@ function setContentMode(): void {
   content.classList.remove('hidden');
   settings.classList.add('hidden');
 
-  if (activeCat === 'characters') {
-    content.classList.add('has-detail');
-    detail.classList.remove('hidden');
-  } else {
-    content.classList.remove('has-detail');
-    detail.classList.add('hidden');
+  // 카테고리별 detail 패널 노출 + master-detail 레이아웃 적용
+  charDetail.classList.toggle('hidden',  activeCat !== 'characters');
+  mapDetail.classList.toggle('hidden',   activeCat !== 'maps');
+  audioDetail.classList.toggle('hidden', activeCat !== 'bgm');
+  content.classList.add('has-detail');   // 모든 카테고리에 detail 표시
+
+  if (activeCat !== 'characters') {
     selectedChar = null;
     stopAnimation();
+  }
+  if (activeCat !== 'maps') selectedMap = null;
+  if (activeCat !== 'bgm') {
+    selectedAudio = null;
+    const ap = document.getElementById('audio-player') as HTMLAudioElement | null;
+    if (ap) ap.pause();
   }
 }
 
@@ -177,6 +197,38 @@ async function refreshList(): Promise<void> {
         if (it.pathname.endsWith('.meta.json')) sidecars.push(it);
         else items.push(it);
       }
+    }
+
+    // Maps 메타 로드
+    if (activeCat === 'maps' && sidecars.length > 0) {
+      await Promise.all(sidecars.map(async (s) => {
+        try {
+          const r = await fetch(s.url, { cache: 'reload' });
+          if (!r.ok) return;
+          const j = await r.json() as MapMeta;
+          const filePath = s.pathname.replace(/\.meta\.json$/, '.json');
+          mapMetaByPath.set(filePath, { name: j.name, fields: j.fields });
+        } catch { /* 무시 */ }
+      }));
+    }
+    // Audio 메타 로드
+    if (activeCat === 'bgm' && sidecars.length > 0) {
+      await Promise.all(sidecars.map(async (s) => {
+        try {
+          const r = await fetch(s.url, { cache: 'reload' });
+          if (!r.ok) return;
+          const j = await r.json() as AudioMeta;
+          // .meta.json → 원본 파일 확장자 자동 탐색 (sidecar 는 확장자 정보 없음 — list 에서 매칭)
+          const baseNoExt = s.pathname.replace(/\.meta\.json$/, '');
+          const candidate = items.find((it) => it.pathname.startsWith(baseNoExt + '.'));
+          if (candidate) {
+            audioMetaByPath.set(candidate.pathname, {
+              name: j.name, volume: j.volume, fadeIn: j.fadeIn, fadeOut: j.fadeOut,
+              loop: j.loop, fields: j.fields,
+            });
+          }
+        } catch { /* 무시 */ }
+      }));
     }
 
     // 캐릭터 메타 로드 — meta.json 의 pathname 으로 대표 파일 pathname 추정
@@ -216,17 +268,31 @@ async function refreshList(): Promise<void> {
     if (items.length === 0) {
       list.innerHTML = `<li class="lib-empty">No ${emptyLabel(activeCat)} yet. Upload above.</li>`;
       if (activeCat === 'characters') renderDetail(null);
+      else if (activeCat === 'maps') renderMapDetail(null);
+      else if (activeCat === 'bgm') renderAudioDetail(null);
       return;
     }
     list.innerHTML = '';
     for (const it of items) list.appendChild(makeItem(it));
 
+    // 첫 행 자동 선택 — 각 카테고리별
     if (activeCat === 'characters') {
-      // 첫 행 자동 선택 — 아무 것도 선택 안 됐을 때
       if (!selectedChar || !items.some((i) => i.pathname === selectedChar!.pathname)) {
         selectChar(items[0]);
       } else {
         renderDetail(selectedChar);
+      }
+    } else if (activeCat === 'maps') {
+      if (!selectedMap || !items.some((i) => i.pathname === selectedMap!.pathname)) {
+        selectMap(items[0]);
+      } else {
+        renderMapDetail(selectedMap);
+      }
+    } else if (activeCat === 'bgm') {
+      if (!selectedAudio || !items.some((i) => i.pathname === selectedAudio!.pathname)) {
+        selectAudio(items[0]);
+      } else {
+        renderAudioDetail(selectedAudio);
       }
     }
   } catch (e) {
@@ -387,6 +453,26 @@ function makeItem(it: BlobItem): HTMLElement {
     // 선택 표시
     if (selectedChar && selectedChar.pathname === it.pathname) li.classList.add('selected');
     li.addEventListener('click', () => selectChar(it));
+  } else if (activeCat === 'maps') {
+    const nm = document.createElement('div');
+    nm.className = 'name';
+    nm.textContent = mapMetaByPath.get(it.pathname)?.name || shortName(it.pathname).replace(/\.[^.]+$/, '');
+    const date = document.createElement('div');
+    date.className = 'date';
+    date.textContent = new Date(it.uploadedAt).toLocaleDateString();
+    meta.appendChild(nm); meta.appendChild(date);
+    if (selectedMap && selectedMap.pathname === it.pathname) li.classList.add('selected');
+    li.addEventListener('click', () => selectMap(it));
+  } else if (activeCat === 'bgm') {
+    const nm = document.createElement('div');
+    nm.className = 'name';
+    nm.textContent = audioMetaByPath.get(it.pathname)?.name || shortName(it.pathname).replace(/\.[^.]+$/, '');
+    const date = document.createElement('div');
+    date.className = 'date';
+    date.textContent = new Date(it.uploadedAt).toLocaleDateString();
+    meta.appendChild(nm); meta.appendChild(date);
+    if (selectedAudio && selectedAudio.pathname === it.pathname) li.classList.add('selected');
+    li.addEventListener('click', () => selectAudio(it));
   } else {
     const nm = document.createElement('div');
     nm.className = 'name'; nm.textContent = shortName(it.pathname);
@@ -562,6 +648,243 @@ function renderDetail(it: BlobItem | null): void {
   }
 }
 
+// ===== Maps detail =====
+
+function selectMap(it: BlobItem): void {
+  selectedMap = it;
+  document.querySelectorAll('.lib-item.selected').forEach((el) => el.classList.remove('selected'));
+  document.querySelectorAll('.lib-item').forEach((el) => {
+    const nm = el.querySelector('.name') as HTMLElement | null;
+    if (nm && nm.textContent === (mapMetaByPath.get(it.pathname)?.name || shortName(it.pathname).replace(/\.[^.]+$/, ''))) {
+      el.classList.add('selected');
+    }
+  });
+  renderMapDetail(it);
+}
+
+function renderMapDetail(it: BlobItem | null): void {
+  const emptyEl = document.getElementById('map-empty')!;
+  const formEl = document.getElementById('map-form')!;
+  const nameInput = document.getElementById('map-name') as HTMLInputElement;
+  const statsEl = document.getElementById('map-stats')!;
+  const subEl = document.getElementById('map-sub')!;
+  const saveBtn = document.getElementById('map-save') as HTMLButtonElement;
+  const warnEl = document.getElementById('map-warn')!;
+  const previewC = document.getElementById('map-preview') as HTMLCanvasElement;
+  const customHost = document.getElementById('map-custom-fields')!;
+
+  if (!it) {
+    emptyEl.classList.remove('hidden');
+    formEl.classList.add('hidden');
+    statsEl.innerHTML = '';
+    customHost.innerHTML = '';
+    const ctx = previewC.getContext('2d');
+    if (ctx) ctx.clearRect(0, 0, previewC.width, previewC.height);
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  formEl.classList.remove('hidden');
+
+  const meta = mapMetaByPath.get(it.pathname);
+  const baseName = shortName(it.pathname).replace(/\.[^.]+$/, '');
+  const initialName = meta?.name ?? baseName;
+  nameInput.value = initialName;
+  subEl.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
+  saveBtn.disabled = true;
+  warnEl.classList.add('hidden');
+
+  // 미리보기 캔버스 — 일단 그리드 placeholder
+  drawMapPlaceholder(previewC);
+  statsEl.innerHTML = '<div class="stat-key">Loading…</div><div class="stat-val">—</div>';
+
+  // JSON 파싱해서 통계 표시
+  void fetch(it.url, { cache: 'reload' }).then((r) => r.ok ? r.json() : null).then((j) => {
+    if (!j || typeof j !== 'object') {
+      statsEl.innerHTML = '<div class="stat-key">format</div><div class="stat-val">not-a-tiled-map</div>';
+      return;
+    }
+    const m = j as { width?: number; height?: number; tilewidth?: number; tileheight?: number; layers?: unknown[]; tilesets?: Array<{ name?: string; source?: string }> };
+    const rows: Array<[string, string]> = [];
+    if (m.width && m.height) rows.push(['size (tiles)', `${m.width} × ${m.height}`]);
+    if (m.tilewidth && m.tileheight) rows.push(['tile', `${m.tilewidth} × ${m.tileheight}`]);
+    if (m.layers) rows.push(['layers', String(m.layers.length)]);
+    if (m.tilesets) {
+      const names = m.tilesets.map((t) => t.name || t.source || '?').join(', ');
+      rows.push(['tilesets', names]);
+    }
+    statsEl.innerHTML = '';
+    for (const [k, v] of rows) {
+      const a = document.createElement('div'); a.className = 'stat-key'; a.textContent = k;
+      const b = document.createElement('div'); b.className = 'stat-val'; b.textContent = v;
+      statsEl.appendChild(a); statsEl.appendChild(b);
+    }
+  }).catch(() => { /* 무시 */ });
+
+  // 커스텀 스키마 필드
+  const fieldsHost = renderCustomFieldsForm(customHost, schemasByCategory.maps.fields, meta?.fields ?? {}, () => updateSaveState());
+
+  function updateSaveState(): void {
+    const raw = nameInput.value.trim();
+    const changed = raw !== initialName || fieldsHost.changed();
+    saveBtn.disabled = !changed || raw.length === 0;
+  }
+  nameInput.oninput = updateSaveState;
+
+  saveBtn.onclick = async (): Promise<void> => {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      const fields = fieldsHost.values();
+      const newMeta: MapMeta = { name: nameInput.value.trim(), fields };
+      const metaName = `${baseName}.meta.json`;
+      const body = JSON.stringify({ schema: 1, ...newMeta, savedAt: new Date().toISOString() }, null, 2);
+      const file = new File([body], metaName, { type: 'application/json' });
+      await uploadAsset(token, 'maps', file);
+      mapMetaByPath.set(it.pathname, newMeta);
+      showToast('Saved');
+      saveBtn.textContent = 'Save';
+      refreshList();
+    } catch (e) {
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      showToast(msg, 'err');
+      saveBtn.textContent = 'Save';
+      saveBtn.disabled = false;
+    }
+  };
+}
+
+function drawMapPlaceholder(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const w = canvas.width, h = canvas.height;
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, w, h);
+  // 그리드
+  ctx.strokeStyle = 'rgba(78, 142, 230, 0.2)';
+  ctx.lineWidth = 1;
+  const step = 32;
+  for (let x = 0; x <= w; x += step) {
+    ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke();
+  }
+  for (let y = 0; y <= h; y += step) {
+    ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(w, y + 0.5); ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(212, 215, 220, 0.4)';
+  ctx.font = '11px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('MAP', w / 2, h / 2);
+}
+
+// ===== Audio detail =====
+
+function selectAudio(it: BlobItem): void {
+  selectedAudio = it;
+  document.querySelectorAll('.lib-item.selected').forEach((el) => el.classList.remove('selected'));
+  document.querySelectorAll('.lib-item').forEach((el) => {
+    const nm = el.querySelector('.name') as HTMLElement | null;
+    if (nm && nm.textContent === (audioMetaByPath.get(it.pathname)?.name || shortName(it.pathname).replace(/\.[^.]+$/, ''))) {
+      el.classList.add('selected');
+    }
+  });
+  renderAudioDetail(it);
+}
+
+function renderAudioDetail(it: BlobItem | null): void {
+  const emptyEl = document.getElementById('audio-empty')!;
+  const formEl = document.getElementById('audio-form')!;
+  const player = document.getElementById('audio-player') as HTMLAudioElement;
+  const nameInput = document.getElementById('audio-name') as HTMLInputElement;
+  const volIn = document.getElementById('audio-volume') as HTMLInputElement;
+  const volVal = document.getElementById('audio-volume-val')!;
+  const fadeInIn = document.getElementById('audio-fadein') as HTMLInputElement;
+  const fadeOutIn = document.getElementById('audio-fadeout') as HTMLInputElement;
+  const loopIn = document.getElementById('audio-loop') as HTMLInputElement;
+  const subEl = document.getElementById('audio-sub')!;
+  const saveBtn = document.getElementById('audio-save') as HTMLButtonElement;
+  const warnEl = document.getElementById('audio-warn')!;
+  const customHost = document.getElementById('audio-custom-fields')!;
+
+  if (!it) {
+    emptyEl.classList.remove('hidden');
+    formEl.classList.add('hidden');
+    player.src = '';
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  formEl.classList.remove('hidden');
+
+  player.src = it.url;
+  player.load();
+
+  const meta = audioMetaByPath.get(it.pathname);
+  const baseName = shortName(it.pathname).replace(/\.[^.]+$/, '');
+  const initialName = meta?.name ?? baseName;
+  const initialVol = meta?.volume ?? 0.7;
+  const initialFadeIn = meta?.fadeIn ?? 0;
+  const initialFadeOut = meta?.fadeOut ?? 0;
+  const initialLoop = meta?.loop ?? true;
+  nameInput.value = initialName;
+  volIn.value = String(initialVol);
+  volVal.textContent = initialVol.toFixed(2);
+  fadeInIn.value = String(initialFadeIn);
+  fadeOutIn.value = String(initialFadeOut);
+  loopIn.checked = initialLoop;
+  subEl.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
+  saveBtn.disabled = true;
+  warnEl.classList.add('hidden');
+
+  const fieldsHost = renderCustomFieldsForm(customHost, schemasByCategory.bgm.fields, meta?.fields ?? {}, () => updateSaveState());
+
+  function updateSaveState(): void {
+    const raw = nameInput.value.trim();
+    const v = parseFloat(volIn.value);
+    const fi = parseFloat(fadeInIn.value);
+    const fo = parseFloat(fadeOutIn.value);
+    const changed = raw !== initialName
+      || Math.abs(v - initialVol) > 0.001
+      || Math.abs(fi - initialFadeIn) > 0.001
+      || Math.abs(fo - initialFadeOut) > 0.001
+      || loopIn.checked !== initialLoop
+      || fieldsHost.changed();
+    saveBtn.disabled = !changed || raw.length === 0;
+  }
+  nameInput.oninput = updateSaveState;
+  volIn.oninput = () => { volVal.textContent = parseFloat(volIn.value).toFixed(2); updateSaveState(); };
+  fadeInIn.oninput = updateSaveState;
+  fadeOutIn.oninput = updateSaveState;
+  loopIn.onchange = updateSaveState;
+
+  saveBtn.onclick = async (): Promise<void> => {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      const fields = fieldsHost.values();
+      const newMeta: AudioMeta = {
+        name: nameInput.value.trim(),
+        volume: parseFloat(volIn.value),
+        fadeIn: parseFloat(fadeInIn.value),
+        fadeOut: parseFloat(fadeOutIn.value),
+        loop: loopIn.checked,
+        fields,
+      };
+      const metaName = `${baseName}.meta.json`;
+      const body = JSON.stringify({ schema: 1, ...newMeta, savedAt: new Date().toISOString() }, null, 2);
+      const file = new File([body], metaName, { type: 'application/json' });
+      await uploadAsset(token, 'bgm', file);
+      audioMetaByPath.set(it.pathname, newMeta);
+      showToast('Saved');
+      saveBtn.textContent = 'Save';
+      refreshList();
+    } catch (e) {
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      showToast(msg, 'err');
+      saveBtn.textContent = 'Save';
+      saveBtn.disabled = false;
+    }
+  };
+}
+
 // ===== Settings 패널 — 카테고리별 메타 필드 스키마 편집 =====
 
 const CATEGORY_LABEL: Record<SchemaCat, string> = {
@@ -576,8 +899,16 @@ const BUILTIN_FIELDS: Record<SchemaCat, { key: string; label: string; type: stri
     { key: 'race',    label: 'Race',    type: 'text' },
     { key: 'actions', label: 'Actions', type: 'list',   note: 'auto-detected from sprite sheet' },
   ],
-  maps: [],
-  bgm: [],
+  maps: [
+    { key: 'name', label: 'Name', type: 'text', note: 'display name (separate from filename)' },
+  ],
+  bgm: [
+    { key: 'name',    label: 'Name',           type: 'text' },
+    { key: 'volume',  label: 'Default volume', type: 'number', note: '0.0 – 1.0' },
+    { key: 'fadeIn',  label: 'Fade in (sec)',  type: 'number' },
+    { key: 'fadeOut', label: 'Fade out (sec)', type: 'number' },
+    { key: 'loop',    label: 'Loop',           type: 'boolean' },
+  ],
 };
 
 async function renderSettings(): Promise<void> {
@@ -586,7 +917,7 @@ async function renderSettings(): Promise<void> {
   const bodyEl = document.getElementById('settings-body')!;
   const cat = activeCat;
   titleEl.textContent = `${CATEGORY_LABEL[cat]} · Settings`;
-  hintEl.textContent = 'Define custom metadata fields collected for each item in this category.';
+  hintEl.textContent = 'Define custom metadata fields collected for each item in this category. Built-in fields below are always present.';
   renderSchemaEditor(bodyEl, cat);
 }
 

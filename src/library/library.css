@@ -210,6 +210,59 @@
 }
 .lib-detail-meta-row .st-btn { padding: 3px 12px; font-size: var(--fs-xs); }
 
+/* Maps detail — 통계 표 */
+.lib-detail-stats {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.lib-detail-stats .stat-key { color: var(--text-mute); }
+.lib-detail-stats .stat-val { color: var(--text); }
+
+/* Audio player wrapper — 기본 컨트롤 사용 */
+.lib-audio-player {
+  display: flex; align-items: center; justify-content: center;
+  aspect-ratio: 1 / 1;
+  background: var(--bg);
+  padding: 16px;
+}
+.lib-audio-player audio {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* 인라인 체크박스 라벨 */
+.lib-field-inline {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px !important;
+  cursor: pointer;
+}
+.lib-field-inline input[type=checkbox] {
+  width: 14px; height: 14px;
+  accent-color: var(--accent);
+  margin: 0;
+}
+.lib-field .range-with-val {
+  display: flex; align-items: center; gap: 8px;
+}
+.lib-field .range-with-val input[type=range] { flex: 1; }
+.lib-field .range-with-val span {
+  width: 48px; text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
 /* Settings 패널 */
 .lib-settings { display: flex; flex-direction: column; gap: 12px; }
 .lib-settings-title {
