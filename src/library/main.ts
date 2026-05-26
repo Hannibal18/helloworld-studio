@@ -89,6 +89,10 @@ let selectedMap: BlobItem | null = null;
 let selectedAudio: BlobItem | null = null;
 let playingAction: string | null = null;
 let playRafId = 0;
+// LPC 4-방향 row 인덱스: 0=up, 1=left, 2=down, 3=right.
+type DirIndex = 0 | 1 | 2 | 3;
+let selectedDir: DirIndex = 2;
+const DIR_BY_NAME: Record<string, DirIndex> = { up: 0, left: 1, down: 2, right: 3 };
 // 현재 detail 패널이 마지막으로 폼을 reset 한 대상 pathname.
 // refreshList 가 같은 항목을 다시 렌더하려 할 때, 사용자가 저장 안 한 편집이 있으면 폼을 안 덮어쓰게 한다.
 let lastRenderedCharPath: string | null = null;
@@ -711,6 +715,11 @@ function renderDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {
     actionsEl.innerHTML = '';
     const ctx = canvas.getContext('2d');
     if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const { canvases: dirCanvases } = getDirElements();
+    dirCanvases.forEach((c) => {
+      const cctx = c.getContext('2d');
+      if (cctx) cctx.clearRect(0, 0, c.width, c.height);
+    });
     return;
   }
   lastRenderedCharPath = it.pathname;
@@ -839,6 +848,23 @@ function renderDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {
     }
   };
 
+  // 방향 버튼(up/left/down/right) — 클릭 시 메인 캔버스 방향만 바꿈.
+  // animation loop 가 selectedDir 글로벌을 매 프레임 참조하므로 즉시 반영.
+  const { buttons: dirButtons } = getDirElements();
+  dirButtons.forEach((btn) => {
+    btn.onclick = (): void => {
+      const dir = btn.dataset.dir;
+      if (!dir || !(dir in DIR_BY_NAME)) return;
+      selectedDir = DIR_BY_NAME[dir];
+      dirButtons.forEach((b) => b.classList.toggle('lib-dir-active', b === btn));
+    };
+  });
+  // 새 캐릭터로 전환 시 active 상태도 selectedDir 에 맞춰 갱신
+  dirButtons.forEach((b) => {
+    const dir = b.dataset.dir;
+    b.classList.toggle('lib-dir-active', dir != null && DIR_BY_NAME[dir] === selectedDir);
+  });
+
   // 액션 버튼 — ZIP 포맷이면 anims 키 전체 (custom 포함), single 이면 검출된 actions
   actionsEl.innerHTML = '';
   const animKeys: string[] = meta?.format === 'zip' && meta.anims
@@ -847,6 +873,9 @@ function renderDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {
   if (animKeys.length === 0) {
     actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">no animations</span>';
     if (meta?.format !== 'zip') loadSheet(it.url, (img) => drawIdleFrame(canvas, img));
+    // 액션 없으면 4방향 sub 도 비움
+    const { canvases: dirCanvases } = getDirElements();
+    dirCanvases.forEach(clearCanvas);
     return;
   }
   for (const a of animKeys) {
@@ -1462,15 +1491,43 @@ function stopAnimation(): void {
   document.querySelectorAll('.lib-detail-actions button.playing').forEach((b) => b.classList.remove('playing'));
 }
 
+// 현재 detail 패널의 4방향 sub canvas 핸들을 얻음 — 매 재생마다 새로 lookup.
+function getDirElements(): { buttons: HTMLButtonElement[]; canvases: HTMLCanvasElement[] } {
+  const root = document.getElementById('detail-dirs');
+  if (!root) return { buttons: [], canvases: [] };
+  const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('.lib-dir-btn'));
+  const canvases = buttons.map((b) => b.querySelector('canvas') as HTMLCanvasElement);
+  return { buttons, canvases };
+}
+
+function clearCanvas(c: HTMLCanvasElement): void {
+  const ctx = c.getContext('2d');
+  if (!ctx) return;
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, c.width, c.height);
+}
+
+// 한 프레임(row/col) 을 캔버스에 그림 — frame size 매개변수로 받음 (single sheet=64, ZIP anim=가변).
+function drawFrame(img: HTMLImageElement, canvas: HTMLCanvasElement, row: number, col: number, frameSize: number): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, col * frameSize, row * frameSize, frameSize, frameSize,
+                0, 0, canvas.width, canvas.height);
+}
+
 // 액션 재생 — 단일 시트(single) 와 액션별 PNG(zip) 양쪽 지원.
+//   메인 캔버스 + 4방향 sub 캔버스 동시 재생. 1방향 액션이면 sub 비활성 + clear.
+//   메인 row 는 selectedDir 글로벌을 매 프레임 참조해서 사용자가 방향 버튼 누르면 즉시 반영.
 function playAction(
   actionName: string,
   sheetUrl: string,
-  canvas: HTMLCanvasElement,
+  mainCanvas: HTMLCanvasElement,
   container: HTMLElement,
   meta?: CharMeta,
 ): void {
-  // 토글: 같은 액션 다시 클릭이면 정지
   if (playingAction === actionName) { stopAnimation(); return; }
   stopAnimation();
   playingAction = actionName;
@@ -1480,27 +1537,32 @@ function playAction(
 
   // ZIP 포맷이고 해당 anim 의 dedicated PNG 가 있으면 그걸 사용
   if (meta?.format === 'zip' && meta.anims && meta.anims[actionName]) {
-    playFromAnimFile(actionName, meta.anims[actionName], canvas);
+    playFromAnimFile(actionName, meta.anims[actionName], mainCanvas);
     return;
   }
-  // 단일 시트 — ANIMATION_CONFIGS row/cycle 로 슬라이스
   const cfg = ANIMATION_CONFIGS[actionName as LPCAction];
   if (!cfg) return;
   loadSheet(sheetUrl, (img) => {
-    const row = cfg.row + (cfg.num === 4 ? 2 : 0); // down
+    const isMulti = cfg.num === 4;
+    const { buttons, canvases } = getDirElements();
+    buttons.forEach((b, i) => {
+      b.disabled = !isMulti;
+      if (!isMulti) clearCanvas(canvases[i]);
+    });
     const cycle = cfg.cycle;
     const FPS = 8;
     let frame = 0; let lastT = 0;
-    const ctx = canvas.getContext('2d')!;
     const loop = (now: number): void => {
       if (playingAction !== actionName) return;
       if (now - lastT > 1000 / FPS) {
         const col = cycle[frame];
-        ctx.imageSmoothingEnabled = false;
-        ctx.fillStyle = '#0e1014';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, col * FRAME_SIZE, row * FRAME_SIZE, FRAME_SIZE, FRAME_SIZE,
-                      0, 0, canvas.width, canvas.height);
+        const mainRow = cfg.row + (isMulti ? selectedDir : 0);
+        drawFrame(img, mainCanvas, mainRow, col, FRAME_SIZE);
+        if (isMulti) {
+          for (let d = 0 as DirIndex; d < 4; d = (d + 1) as DirIndex) {
+            drawFrame(img, canvases[d], cfg.row + d, col, FRAME_SIZE);
+          }
+        }
         frame = (frame + 1) % cycle.length;
         lastT = now;
       }
@@ -1510,36 +1572,37 @@ function playAction(
   });
 }
 
-/** ZIP 캐릭터의 액션별 PNG 에서 재생.
- *  LPC 의 standard/<anim>.png 는 항상 SHEET_WIDTH(832) × (num*FRAME_SIZE) 로 추출되어
- *  실제 cycle 보다 PNG 가 넓음. 표준 액션이면 ANIMATION_CONFIGS 의 cycle 을 그대로 사용해
- *  빈 frame 을 건너뜀. custom/<anim>.png 는 정확히 cycle 폭으로 추출되므로 전체 순환. */
-function playFromAnimFile(actionName: string, url: string, canvas: HTMLCanvasElement): void {
+/** ZIP 캐릭터의 액션별 PNG 에서 재생. 메인 + 4방향 동시.
+ *  LPC standard/<anim>.png 는 항상 SHEET_WIDTH(832) × (num*FRAME_SIZE) 로 추출 —
+ *  표준 액션이면 ANIMATION_CONFIGS 의 cycle 을 그대로 써서 빈 frame 건너뜀. */
+function playFromAnimFile(actionName: string, url: string, mainCanvas: HTMLCanvasElement): void {
   loadSheet(url, (img) => {
     const cfg = ANIMATION_CONFIGS[actionName as LPCAction];
-    // 행 수 결정 — ANIMATION_CONFIGS 가 있으면 그 num, 없으면 4 (custom 은 거의 4 방향)
     const numRows = cfg?.num ?? 4;
     const frameSize = Math.round(img.naturalHeight / numRows);
     const totalCols = Math.max(1, Math.round(img.naturalWidth / frameSize));
-    // 4-방향이면 row 2 (down). 1-방향(hurt/climb) 이면 row 0.
-    const row = numRows === 4 ? 2 : 0;
-    // cycle 결정 — 표준이면 정의된 cycle, 아니면 PNG 의 모든 col (custom 은 꽉 찬 추출)
+    const isMulti = numRows === 4;
+    const { buttons, canvases } = getDirElements();
+    buttons.forEach((b, i) => {
+      b.disabled = !isMulti;
+      if (!isMulti) clearCanvas(canvases[i]);
+    });
     const cycle: number[] = cfg ? cfg.cycle.slice() : (() => {
       const a: number[] = []; for (let i = 0; i < totalCols; i++) a.push(i); return a;
     })();
     const FPS = 8;
     let frame = 0; let lastT = 0;
-    const ctx = canvas.getContext('2d')!;
     const loop = (now: number): void => {
       if (playingAction !== actionName) return;
       if (now - lastT > 1000 / FPS) {
         const col = cycle[frame];
-        ctx.imageSmoothingEnabled = false;
-        ctx.fillStyle = '#0e1014';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img,
-          col * frameSize, row * frameSize, frameSize, frameSize,
-          0, 0, canvas.width, canvas.height);
+        const mainRow = isMulti ? selectedDir : 0;
+        drawFrame(img, mainCanvas, mainRow, col, frameSize);
+        if (isMulti) {
+          for (let d = 0 as DirIndex; d < 4; d = (d + 1) as DirIndex) {
+            drawFrame(img, canvases[d], d, col, frameSize);
+          }
+        }
         frame = (frame + 1) % cycle.length;
         lastT = now;
       }

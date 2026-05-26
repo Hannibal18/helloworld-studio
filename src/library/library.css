@@ -184,6 +184,39 @@
   border-radius: var(--radius);
   image-rendering: pixelated;
 }
+/* 메인 미리보기(정면) + 4방향 썸네일 묶음. */
+.lib-preview-stack {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.lib-detail-dirs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.lib-dir-btn {
+  padding: 0;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  cursor: pointer;
+  aspect-ratio: 1 / 1;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color 0.1s, background 0.1s;
+}
+.lib-dir-btn:hover { border-color: var(--accent); }
+.lib-dir-btn.lib-dir-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+}
+.lib-dir-btn canvas {
+  width: 100%; height: 100%;
+  image-rendering: pixelated;
+}
+.lib-dir-btn[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+  border-color: var(--border);
+}
 .lib-detail-info h3 {
   margin: 0;
   font-size: var(--fs-md);

@@ -51,7 +51,23 @@
         </ul>
         <!-- Characters 탭: 미리보기 + 액션 -->
         <aside class="lib-detail hidden" id="char-detail">
-          <canvas id="detail-preview" class="lib-detail-preview" width="256" height="256"></canvas>
+          <div class="lib-preview-stack">
+            <canvas id="detail-preview" class="lib-detail-preview" width="256" height="256"></canvas>
+            <div id="detail-dirs" class="lib-detail-dirs">
+              <button type="button" class="lib-dir-btn" data-dir="up"    title="Up">
+                <canvas width="64" height="64"></canvas>
+              </button>
+              <button type="button" class="lib-dir-btn" data-dir="left"  title="Left">
+                <canvas width="64" height="64"></canvas>
+              </button>
+              <button type="button" class="lib-dir-btn lib-dir-active" data-dir="down" title="Down (front)">
+                <canvas width="64" height="64"></canvas>
+              </button>
+              <button type="button" class="lib-dir-btn" data-dir="right" title="Right">
+                <canvas width="64" height="64"></canvas>
+              </button>
+            </div>
+          </div>
           <div class="lib-detail-info">
             <div id="detail-empty" class="lib-detail-empty">No character selected</div>
             <div id="detail-form" class="lib-detail-form hidden">
