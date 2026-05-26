@@ -20,7 +20,8 @@ const EXT_BY_CAT: Record<Category, string[]> = {
 };
 
 let token = '';
-let activeCat: Category = 'maps';
+let activeCat: Category = 'maps';     // 마지막 본 자산 카테고리 (settings 클릭 시에도 유지)
+let inSettings = false;                // Settings 탭 활성 여부
 
 type BodyType = 'male' | 'female' | 'none';
 interface CharMeta {
@@ -104,6 +105,23 @@ function emptyLabel(cat: Category): string {
 function setContentMode(): void {
   const content = document.getElementById('lib-content')!;
   const detail = document.getElementById('char-detail')!;
+  const upload = document.getElementById('upload-zone')!;
+  const settings = document.getElementById('settings-panel')!;
+
+  // Settings 보기일 때: 업로드존/리스트/디테일 다 숨기고 settings 만
+  if (inSettings) {
+    upload.classList.add('hidden');
+    content.classList.add('hidden');
+    settings.classList.remove('hidden');
+    detail.classList.add('hidden');
+    selectedChar = null;
+    stopAnimation();
+    return;
+  }
+  upload.classList.remove('hidden');
+  content.classList.remove('hidden');
+  settings.classList.add('hidden');
+
   if (activeCat === 'characters') {
     content.classList.add('has-detail');
     detail.classList.remove('hidden');
@@ -117,6 +135,7 @@ function setContentMode(): void {
 
 async function refreshList(): Promise<void> {
   setContentMode();
+  if (inSettings) { await renderSettings(); return; }
   const list = document.getElementById('file-list')!;
   list.innerHTML = '<li class="lib-empty">Loading…</li>';
   try {
@@ -386,6 +405,160 @@ function renderDetail(it: BlobItem | null): void {
   }
 }
 
+// ===== Settings 패널 =====
+
+async function renderSettings(): Promise<void> {
+  const titleEl = document.getElementById('settings-title')!;
+  const hintEl = document.getElementById('settings-hint')!;
+  const bodyEl = document.getElementById('settings-body')!;
+
+  if (activeCat === 'characters') {
+    titleEl.textContent = 'Characters · Settings';
+    hintEl.textContent = 'Edit name, body type, and race for each character. Changes are saved per row.';
+    bodyEl.innerHTML = '<div class="lib-settings-empty">Loading…</div>';
+
+    // 캐릭터 목록 + sidecar meta 로드
+    const all = await listAssets(token, 'characters');
+    const items: BlobItem[] = [];
+    const sidecars: BlobItem[] = [];
+    for (const it of all) (it.pathname.endsWith('.meta.json') ? sidecars : items).push(it);
+
+    await Promise.all(sidecars.map(async (s) => {
+      try {
+        const r = await fetch(s.url);
+        if (!r.ok) return;
+        const j = await r.json() as { actions?: LPCAction[]; body?: BodyType; name?: string; race?: string };
+        const pngPath = s.pathname.replace(/\.meta\.json$/, '.png');
+        if (Array.isArray(j.actions)) {
+          charMetaByPath.set(pngPath, { actions: j.actions, body: j.body, name: j.name, race: j.race });
+        }
+      } catch { /* 무시 */ }
+    }));
+
+    if (items.length === 0) {
+      bodyEl.innerHTML = '<div class="lib-settings-empty">No characters uploaded yet.</div>';
+      return;
+    }
+    const rows = document.createElement('div');
+    rows.className = 'lib-settings-rows';
+    for (const it of items) rows.appendChild(makeSettingsRow(it));
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(rows);
+    return;
+  }
+
+  // Maps / Audio — 향후 확장
+  const labelByCat: Record<Exclude<Category, 'characters'>, string> = { maps: 'Maps', bgm: 'Audio' };
+  titleEl.textContent = `${labelByCat[activeCat as 'maps' | 'bgm']} · Settings`;
+  hintEl.textContent = 'No metadata to manage for this category yet.';
+  bodyEl.innerHTML = '<div class="lib-settings-empty">Per-asset settings for Maps and Audio are not yet implemented.</div>';
+}
+
+function makeSettingsRow(it: BlobItem): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'lib-settings-row';
+  const meta = charMetaByPath.get(it.pathname);
+  const initialName = meta?.name ?? charBaseName(it.pathname);
+  const initialBody = meta?.body ?? 'none';
+  const initialRace = meta?.race ?? '';
+
+  // 썸네일
+  const thumb = document.createElement('div');
+  thumb.className = 'thumb';
+  const c = document.createElement('canvas');
+  c.width = 36; c.height = 36;
+  thumb.appendChild(c);
+  loadSheet(it.url, (img) => drawCharacterThumb(c, img));
+
+  // Name
+  const nameIn = document.createElement('input');
+  nameIn.type = 'text'; nameIn.value = initialName; nameIn.placeholder = 'Name';
+
+  // Body
+  const bodySel = document.createElement('select');
+  for (const [v, l] of [['male', 'Male'], ['female', 'Female'], ['none', 'None']] as const) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = l;
+    if (v === initialBody) o.selected = true;
+    bodySel.appendChild(o);
+  }
+
+  // Race
+  const raceIn = document.createElement('input');
+  raceIn.type = 'text'; raceIn.value = initialRace; raceIn.placeholder = 'race';
+
+  // Save
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'st-btn st-btn-primary save-btn';
+  saveBtn.type = 'button';
+  saveBtn.textContent = 'Save';
+  saveBtn.disabled = true;
+
+  const onChange = (): void => {
+    const changed = nameIn.value.trim() !== initialName
+      || bodySel.value !== initialBody
+      || raceIn.value.trim() !== initialRace;
+    saveBtn.disabled = !changed || nameIn.value.trim().length === 0;
+  };
+  nameIn.addEventListener('input', onChange);
+  bodySel.addEventListener('change', onChange);
+  raceIn.addEventListener('input', onChange);
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true; saveBtn.textContent = '…';
+    try {
+      const metaName = `${charBaseName(it.pathname)}.meta.json`;
+      const newMeta = {
+        schema: 1,
+        source: 'lpc',
+        body: bodySel.value as BodyType,
+        name: nameIn.value.trim(),
+        race: raceIn.value.trim() || undefined,
+        actions: meta?.actions ?? [],
+        savedAt: new Date().toISOString(),
+      };
+      const file = new File([JSON.stringify(newMeta, null, 2)], metaName, { type: 'application/json' });
+      await uploadAsset(token, 'characters', file);
+      charMetaByPath.set(it.pathname, {
+        actions: newMeta.actions, body: newMeta.body,
+        name: newMeta.name, race: newMeta.race,
+      });
+      showToast('Saved');
+      saveBtn.textContent = 'Saved';
+      window.setTimeout(() => { saveBtn.textContent = 'Save'; }, 1500);
+    } catch (e) {
+      saveBtn.textContent = 'Save';
+      saveBtn.disabled = false;
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      showToast(msg, 'err');
+    }
+  });
+
+  // Delete
+  const delBtn = document.createElement('button');
+  delBtn.className = 'del-btn'; delBtn.textContent = '×'; delBtn.title = 'Delete';
+  delBtn.addEventListener('click', async () => {
+    if (!confirm('Delete this character?')) return;
+    try {
+      await deleteAsset(token, it.url);
+      const metaUrl = it.url.replace(/\.png$/i, '.meta.json');
+      try { await deleteAsset(token, metaUrl); } catch { /* 무시 */ }
+      showToast('Deleted');
+      refreshList();
+    } catch (e) {
+      showToast((e as Error).message, 'err');
+    }
+  });
+
+  row.appendChild(thumb);
+  row.appendChild(nameIn);
+  row.appendChild(bodySel);
+  row.appendChild(raceIn);
+  row.appendChild(saveBtn);
+  row.appendChild(delBtn);
+  return row;
+}
+
 function drawIdleFrame(canvas: HTMLCanvasElement, img: HTMLImageElement): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -612,12 +785,22 @@ ready(async () => {
   // 비번 받기
   token = await ensureAuth();
 
-  // 탭
+  // 탭 — Settings 는 별도. asset 탭 클릭 시 inSettings 해제.
   document.querySelectorAll<HTMLButtonElement>('.lib-tab').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.lib-tab').forEach((b) => b.classList.remove('lib-tab-active'));
-      btn.classList.add('lib-tab-active');
-      activeCat = btn.dataset.cat as Category;
+      const target = btn.dataset.cat;
+      if (target === 'settings') {
+        inSettings = true;
+      } else {
+        inSettings = false;
+        activeCat = target as Category;
+      }
+      // 탭 시각 활성: Settings 면 Settings 만, 아니면 activeCat 만
+      document.querySelectorAll('.lib-tab').forEach((b) => {
+        const t = (b as HTMLElement).dataset.cat;
+        const active = inSettings ? t === 'settings' : t === activeCat;
+        b.classList.toggle('lib-tab-active', active);
+      });
       refreshList();
     });
   });

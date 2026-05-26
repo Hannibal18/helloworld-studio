@@ -26,6 +26,8 @@
         <button class="lib-tab lib-tab-active" data-cat="maps">Maps</button>
         <button class="lib-tab" data-cat="characters">Characters</button>
         <button class="lib-tab" data-cat="bgm">Audio</button>
+        <span class="lib-tabs-spacer"></span>
+        <button class="lib-tab lib-tab-right" data-cat="settings">Settings</button>
       </div>
 
       <div class="lib-upload-zone" id="upload-zone">
@@ -35,6 +37,13 @@
       </div>
 
       <div class="lib-progress" id="upload-progress"></div>
+
+      <!-- Settings 패널 — Settings 탭일 때만 표시. 카테고리에 따라 내용 분기. -->
+      <section id="settings-panel" class="lib-settings hidden">
+        <h3 id="settings-title" class="lib-settings-title">Settings</h3>
+        <p id="settings-hint" class="lib-settings-hint"></p>
+        <div id="settings-body"></div>
+      </section>
 
       <div class="lib-content" id="lib-content">
         <ul class="lib-list" id="file-list">

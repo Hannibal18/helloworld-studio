@@ -11,6 +11,11 @@
   display: flex; gap: 1px;
   margin-bottom: 16px;
   border-bottom: 1px solid var(--border);
+  align-items: stretch;
+}
+.lib-tabs-spacer { flex: 1; }
+.lib-tab-right { /* Settings — 우측 끝, 약간의 시각적 분리 */
+  color: var(--text-mute);
 }
 .lib-tab {
   background: transparent; border: 0;
@@ -204,6 +209,87 @@
   white-space: nowrap;
 }
 .lib-detail-meta-row .st-btn { padding: 3px 12px; font-size: var(--fs-xs); }
+
+/* Settings 패널 */
+.lib-settings { display: flex; flex-direction: column; gap: 12px; }
+.lib-settings-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.lib-settings-hint {
+  margin: -4px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-mute);
+}
+.lib-settings-rows {
+  display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+.lib-settings-row {
+  display: grid;
+  grid-template-columns: 44px minmax(160px, 1fr) 110px minmax(120px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.lib-settings-row:last-child { border-bottom: 0; }
+.lib-settings-row .thumb { width: 36px; height: 36px; }
+.lib-settings-row input,
+.lib-settings-row select {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 4px 7px;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  width: 100%;
+  min-width: 0;
+}
+.lib-settings-row input:focus,
+.lib-settings-row select:focus { outline: none; border-color: var(--accent); }
+.lib-settings-row .save-btn { padding: 3px 10px; font-size: var(--fs-xs); }
+.lib-settings-row .del-btn {
+  background: transparent; border: 0;
+  color: var(--text-mute); cursor: pointer;
+  padding: 4px 8px; border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+.lib-settings-row .del-btn:hover { color: var(--rec); background: rgba(196, 99, 74, 0.08); }
+
+.lib-settings-empty {
+  text-align: center;
+  color: var(--text-mute);
+  font-size: var(--fs-sm);
+  padding: 32px 20px;
+  background: var(--surface);
+  border: 1px dashed var(--border-2);
+  border-radius: var(--radius);
+}
+
+@media (max-width: 700px) {
+  .lib-settings-row {
+    grid-template-columns: 44px 1fr auto;
+    grid-template-areas:
+      "thumb name del"
+      "body body body"
+      "race race race"
+      "save save save";
+  }
+  .lib-settings-row .thumb { grid-area: thumb; }
+  .lib-settings-row > input:nth-of-type(1) { grid-area: name; }
+  .lib-settings-row > select { grid-area: body; }
+  .lib-settings-row > input:nth-of-type(2) { grid-area: race; }
+  .lib-settings-row > .save-btn { grid-area: save; }
+  .lib-settings-row > .del-btn { grid-area: del; }
+}
 .lib-detail-actions-title {
   margin-top: 12px;
   font-size: var(--fs-xs);
