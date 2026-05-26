@@ -214,6 +214,39 @@ function charBaseName(pathname: string): string {
 function displayName(it: BlobItem): string {
   return charMetaByPath.get(it.pathname)?.name || charBaseName(it.pathname);
 }
+function normalizeName(s: string): string {
+  return s.trim().toLowerCase();
+}
+/** 이름이 이미 존재하는 캐릭터의 것인지 확인 (대소문자/공백 무시).
+ *  exceptPath 가 있으면 그 PNG 의 메타는 비교 대상에서 제외 (detail 에서 자기 자신은 OK). */
+function isCharNameTaken(name: string, exceptPath?: string): boolean {
+  const norm = normalizeName(name);
+  if (!norm) return false;
+  for (const [pathname, meta] of charMetaByPath.entries()) {
+    if (pathname === exceptPath) continue;
+    const n = normalizeName(meta.name || charBaseName(pathname));
+    if (n === norm) return true;
+  }
+  return false;
+}
+/** 업로드 모달 등에서 호출 — 현재 캐릭터 목록과 메타를 charMetaByPath 에 동기화. */
+async function ensureCharactersLoaded(): Promise<void> {
+  try {
+    const all = await listAssets(token, 'characters');
+    const sidecars = all.filter((it) => it.pathname.endsWith('.meta.json'));
+    await Promise.all(sidecars.map(async (s) => {
+      try {
+        const r = await fetch(s.url, { cache: 'reload' });
+        if (!r.ok) return;
+        const j = await r.json() as { actions?: LPCAction[]; body?: BodyType; name?: string; race?: string; fields?: Record<string, string> };
+        const pngPath = s.pathname.replace(/\.meta\.json$/, '.png');
+        if (Array.isArray(j.actions)) {
+          charMetaByPath.set(pngPath, { actions: j.actions, body: j.body, name: j.name, race: j.race, fields: j.fields });
+        }
+      } catch { /* 무시 */ }
+    }));
+  } catch { /* 무시 */ }
+}
 
 function makeItem(it: BlobItem): HTMLElement {
   const li = document.createElement('li');
@@ -341,15 +374,30 @@ function renderDetail(it: BlobItem | null): void {
 
   // 커스텀 스키마 필드 폼 렌더
   const customFieldsHost = renderCustomFieldsForm(formEl, schemasByCategory.characters.fields, meta?.fields ?? {}, onAnyChange);
+  const warnEl = document.getElementById('detail-warn')!;
 
-  // 변경 감지
+  // 변경 감지 + 이름 충돌 검사
   function onAnyChange(): void {
+    const raw = nameInput.value.trim();
     const customChanged = customFieldsHost.changed();
-    const changed = nameInput.value.trim() !== initialName
+    const changed = raw !== initialName
       || bodySel.value !== initialBody
       || raceInput.value.trim() !== initialRace
       || customChanged;
-    saveBtn.disabled = !changed || nameInput.value.trim().length === 0;
+    if (raw.length === 0) {
+      warnEl.textContent = 'Name is required.';
+      warnEl.classList.remove('hidden');
+      saveBtn.disabled = true;
+      return;
+    }
+    if (raw !== initialName && isCharNameTaken(raw, it!.pathname)) {
+      warnEl.textContent = `A character named "${raw}" already exists.`;
+      warnEl.classList.remove('hidden');
+      saveBtn.disabled = true;
+      return;
+    }
+    warnEl.classList.add('hidden');
+    saveBtn.disabled = !changed;
   }
   nameInput.oninput = onAnyChange;
   bodySel.onchange = onAnyChange;
@@ -856,6 +904,9 @@ async function uploadOne(file: File, displayName: string, opts?: {
 
 /** 캐릭터 업로드 모달 흐름. detect → preview + name input → user confirms → uploadOne. */
 async function uploadCharacterWithModal(file: File): Promise<void> {
+  // 이름 중복 검사용으로 현재 캐릭터 목록 최신화
+  await ensureCharactersLoaded();
+
   const modal = document.getElementById('char-upload-modal')!;
   const previewC = document.getElementById('cu-preview') as HTMLCanvasElement;
   const nameInput = document.getElementById('cu-name') as HTMLInputElement;
@@ -887,14 +938,15 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
 
   // 액션 검출 (백그라운드)
   let actions: LPCAction[] = [];
+  let isStandardSheet = false;
   try {
     const det = await detectActionsFromFile(file);
     if (!det.standard) {
       warnEl.textContent = `Not a standard 832×3456 LPC sheet (got ${det.width}×${det.height}). Upload disabled.`;
       warnEl.classList.remove('hidden');
       actionsEl.innerHTML = '';
-      submitBtn.disabled = true;
     } else {
+      isStandardSheet = true;
       actions = det.actions;
       actionsEl.innerHTML = '';
       for (const a of actions) {
@@ -906,12 +958,33 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
       if (actions.length === 0) {
         actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">no actions detected</span>';
       }
-      submitBtn.disabled = false;
     }
   } catch (e) {
     warnEl.textContent = (e as Error).message;
     warnEl.classList.remove('hidden');
   }
+
+  // 통합 검증 — 시트 표준 + 이름 비어있지 않음 + 이름 중복 없음
+  const validate = (): void => {
+    const raw = nameInput.value.trim();
+    if (!isStandardSheet) { submitBtn.disabled = true; return; }
+    if (!raw) {
+      warnEl.textContent = 'Name is required.';
+      warnEl.classList.remove('hidden');
+      submitBtn.disabled = true;
+      return;
+    }
+    if (isCharNameTaken(raw)) {
+      warnEl.textContent = `A character named "${raw}" already exists.`;
+      warnEl.classList.remove('hidden');
+      submitBtn.disabled = true;
+      return;
+    }
+    warnEl.classList.add('hidden');
+    submitBtn.disabled = false;
+  };
+  nameInput.addEventListener('input', validate);
+  validate();
 
   // 사용자 응답 대기
   await new Promise<void>((resolve) => {
@@ -921,18 +994,19 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
       submitBtn.onclick = null;
       cancelBtn.onclick = null;
       nameInput.onkeydown = null;
+      nameInput.removeEventListener('input', validate);
       resolve();
     };
     const doUpload = async (): Promise<void> => {
       const raw = nameInput.value.trim();
-      if (!raw) { warnEl.textContent = 'Name required.'; warnEl.classList.remove('hidden'); return; }
+      if (!raw || isCharNameTaken(raw)) { validate(); return; }
       const cleaned = raw.replace(/[\/\\]/g, '_').replace(/\.png$/i, '');
       const newFile = new File([file], `${cleaned}.png`, { type: file.type });
       cleanup();
       await uploadOne(newFile, `${cleaned}.png`, {
         characterActions: actions,
         characterBaseName: cleaned,
-        characterDisplayName: raw,           // 사용자가 원본 그대로 입력한 이름
+        characterDisplayName: raw,
         characterBody: bodySel.value as BodyType,
         characterRace: raceInput.value.trim(),
       });
