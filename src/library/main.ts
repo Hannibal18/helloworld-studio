@@ -41,13 +41,19 @@ interface CharMeta {
   anims?: Record<string, string>;
   customAnims?: string[];
   totalSize?: number;              // ZIP 의 모든 파일 합산 크기 (표시용)
+  originalZipUrl?: string;         // ZIP 캐릭터의 원본 .zip URL (다운로드용)
 }
 
 // pathname → 자산 메타 (캐릭터/맵/오디오 공용 — 카테고리별로 사용하는 필드만 채움).
 const charMetaByPath = new Map<string, CharMeta>();
 interface MapMeta { name?: string; fields?: Record<string, string>; }
+type AudioCategory = 'bgm' | 'effect';
 interface AudioMeta {
-  name?: string; volume?: number; fadeIn?: number; fadeOut?: number; loop?: boolean;
+  name?: string;
+  volume?: number;
+  loop?: boolean;
+  category?: AudioCategory;
+  memo?: string;
   fields?: Record<string, string>;
 }
 const mapMetaByPath = new Map<string, MapMeta>();
@@ -223,8 +229,10 @@ async function refreshList(): Promise<void> {
           const candidate = items.find((it) => it.pathname.startsWith(baseNoExt + '.'));
           if (candidate) {
             audioMetaByPath.set(candidate.pathname, {
-              name: j.name, volume: j.volume, fadeIn: j.fadeIn, fadeOut: j.fadeOut,
-              loop: j.loop, fields: j.fields,
+              name: j.name, volume: j.volume, loop: j.loop,
+              category: (j as { category?: AudioCategory }).category,
+              memo: (j as { memo?: string }).memo,
+              fields: j.fields,
             });
           }
         } catch { /* 무시 */ }
@@ -241,10 +249,8 @@ async function refreshList(): Promise<void> {
             actions?: LPCAction[]; body?: BodyType; name?: string; race?: string;
             fields?: Record<string, string>;
             format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
+            originalZipUrl?: string;
           };
-          // 대표 파일 pathname 역산:
-          //   characters/Foo.meta.json → characters/Foo.png  (legacy)
-          //   characters/Foo/meta.json → characters/Foo/thumbnail.png  (ZIP)
           const charPath = s.pathname.endsWith('/meta.json')
             ? s.pathname.replace(/\/meta\.json$/, '/thumbnail.png')
             : s.pathname.replace(/\.meta\.json$/, '.png');
@@ -258,6 +264,7 @@ async function refreshList(): Promise<void> {
               format: j.format ?? 'single',
               anims: j.anims,
               customAnims: j.customAnims,
+              originalZipUrl: j.originalZipUrl,
               totalSize: folderTotalSize.get(charPath),
             });
           }
@@ -365,6 +372,50 @@ function isCharNameTaken(name: string, exceptPath?: string): boolean {
     if (n === norm) return true;
   }
   return false;
+}
+function isAudioNameTaken(name: string, exceptPath?: string): boolean {
+  const norm = normalizeName(name);
+  if (!norm) return false;
+  for (const [pathname, meta] of audioMetaByPath.entries()) {
+    if (pathname === exceptPath) continue;
+    const fallback = shortName(pathname).replace(/\.[^.]+$/, '');
+    const n = normalizeName(meta.name || fallback);
+    if (n === norm) return true;
+  }
+  return false;
+}
+function suggestUniqueAudioName(base: string): string {
+  if (!isAudioNameTaken(base)) return base;
+  const m = base.match(/^(.*?)\s*(\d+)$/);
+  const stem = m ? m[1].trim() : base;
+  let n = m ? parseInt(m[2], 10) + 1 : 2;
+  while (n < 10000) {
+    const candidate = `${stem} ${n}`;
+    if (!isAudioNameTaken(candidate)) return candidate;
+    n++;
+  }
+  return `${base} ${Date.now()}`;
+}
+async function ensureAudioLoaded(): Promise<void> {
+  try {
+    const all = await listAssets(token, 'bgm');
+    const sidecars = all.filter((it) => it.pathname.endsWith('.meta.json'));
+    await Promise.all(sidecars.map(async (s) => {
+      try {
+        const r = await fetch(s.url, { cache: 'reload' });
+        if (!r.ok) return;
+        const j = await r.json() as Partial<AudioMeta> & { fields?: Record<string, string> };
+        const baseNoExt = s.pathname.replace(/\.meta\.json$/, '');
+        const candidate = all.find((it) => it.pathname.startsWith(baseNoExt + '.') && !it.pathname.endsWith('.meta.json'));
+        if (candidate) {
+          audioMetaByPath.set(candidate.pathname, {
+            name: j.name, volume: j.volume, loop: j.loop,
+            category: j.category, memo: j.memo, fields: j.fields,
+          });
+        }
+      } catch { /* 무시 */ }
+    }));
+  } catch { /* 무시 */ }
 }
 /** base 와 겹치지 않는 다음 이름 제안. 'Knight' → 'Knight 2', 'Knight 2' → 'Knight 3'. */
 function suggestUniqueName(base: string): string {
@@ -526,6 +577,7 @@ function renderDetail(it: BlobItem | null): void {
   const raceInput = document.getElementById('detail-race') as HTMLInputElement;
   const subEl = document.getElementById('detail-sub')!;
   const saveBtn = document.getElementById('detail-save') as HTMLButtonElement;
+  const dlBtn = document.getElementById('detail-download') as HTMLAnchorElement;
   const actionsEl = document.getElementById('detail-actions')!;
   const canvas = document.getElementById('detail-preview') as HTMLCanvasElement;
 
@@ -542,7 +594,6 @@ function renderDetail(it: BlobItem | null): void {
   formEl.classList.remove('hidden');
 
   const meta = charMetaByPath.get(it.pathname);
-  // 폼 초기값 — meta 가 없으면 파일명 기반 기본
   const initialName = meta?.name ?? charBaseName(it.pathname);
   const initialBody = meta?.body ?? 'none';
   const initialRace = meta?.race ?? '';
@@ -552,6 +603,27 @@ function renderDetail(it: BlobItem | null): void {
   const displaySize = meta?.totalSize ?? it.size;
   subEl.textContent = `${fmtSize(displaySize)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   saveBtn.disabled = true;
+
+  // 다운로드 버튼 — ZIP 포맷은 보관해둔 원본 zip, single 은 PNG 그대로
+  if (meta?.format === 'zip' && meta.originalZipUrl) {
+    dlBtn.href = meta.originalZipUrl;
+    const charName = initialName || charBaseName(it.pathname);
+    dlBtn.setAttribute('download', `${charName}.zip`);
+    dlBtn.title = 'Download original ZIP';
+    dlBtn.style.display = '';
+  } else if (meta?.format === 'zip') {
+    // ZIP 캐릭터인데 원본이 없는 경우 (구버전) — 다운로드 비활성
+    dlBtn.removeAttribute('href');
+    dlBtn.title = 'Original ZIP not stored for this character';
+    dlBtn.style.opacity = '0.4';
+    dlBtn.style.pointerEvents = 'none';
+  } else {
+    dlBtn.href = it.url;
+    dlBtn.setAttribute('download', shortName(it.pathname));
+    dlBtn.title = 'Download original sheet';
+    dlBtn.style.opacity = '';
+    dlBtn.style.pointerEvents = '';
+  }
 
   // 커스텀 스키마 필드 폼 렌더
   const customFieldsHost = renderCustomFieldsForm(formEl, schemasByCategory.characters.fields, meta?.fields ?? {}, onAnyChange);
@@ -669,6 +741,7 @@ function renderMapDetail(it: BlobItem | null): void {
   const statsEl = document.getElementById('map-stats')!;
   const subEl = document.getElementById('map-sub')!;
   const saveBtn = document.getElementById('map-save') as HTMLButtonElement;
+  const dlBtn = document.getElementById('map-download') as HTMLAnchorElement;
   const warnEl = document.getElementById('map-warn')!;
   const previewC = document.getElementById('map-preview') as HTMLCanvasElement;
   const customHost = document.getElementById('map-custom-fields')!;
@@ -692,6 +765,10 @@ function renderMapDetail(it: BlobItem | null): void {
   subEl.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   saveBtn.disabled = true;
   warnEl.classList.add('hidden');
+
+  dlBtn.href = it.url;
+  dlBtn.setAttribute('download', shortName(it.pathname));
+  dlBtn.title = 'Download original map';
 
   // 미리보기 캔버스 — 일단 그리드 placeholder
   drawMapPlaceholder(previewC);
@@ -797,11 +874,12 @@ function renderAudioDetail(it: BlobItem | null): void {
   const nameInput = document.getElementById('audio-name') as HTMLInputElement;
   const volIn = document.getElementById('audio-volume') as HTMLInputElement;
   const volVal = document.getElementById('audio-volume-val')!;
-  const fadeInIn = document.getElementById('audio-fadein') as HTMLInputElement;
-  const fadeOutIn = document.getElementById('audio-fadeout') as HTMLInputElement;
+  const catSel = document.getElementById('audio-category') as HTMLSelectElement;
   const loopIn = document.getElementById('audio-loop') as HTMLInputElement;
+  const memoIn = document.getElementById('audio-memo') as HTMLTextAreaElement;
   const subEl = document.getElementById('audio-sub')!;
   const saveBtn = document.getElementById('audio-save') as HTMLButtonElement;
+  const dlBtn = document.getElementById('audio-download') as HTMLAnchorElement;
   const warnEl = document.getElementById('audio-warn')!;
   const customHost = document.getElementById('audio-custom-fields')!;
 
@@ -821,39 +899,42 @@ function renderAudioDetail(it: BlobItem | null): void {
   const baseName = shortName(it.pathname).replace(/\.[^.]+$/, '');
   const initialName = meta?.name ?? baseName;
   const initialVol = meta?.volume ?? 0.7;
-  const initialFadeIn = meta?.fadeIn ?? 0;
-  const initialFadeOut = meta?.fadeOut ?? 0;
   const initialLoop = meta?.loop ?? true;
+  const initialCat: AudioCategory = meta?.category ?? 'bgm';
+  const initialMemo = meta?.memo ?? '';
   nameInput.value = initialName;
   volIn.value = String(initialVol);
   volVal.textContent = initialVol.toFixed(2);
-  fadeInIn.value = String(initialFadeIn);
-  fadeOutIn.value = String(initialFadeOut);
+  catSel.value = initialCat;
   loopIn.checked = initialLoop;
+  memoIn.value = initialMemo;
   subEl.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   saveBtn.disabled = true;
   warnEl.classList.add('hidden');
+
+  // 다운로드 버튼 — 원본 오디오 파일 직접 다운로드
+  dlBtn.href = it.url;
+  dlBtn.setAttribute('download', shortName(it.pathname));
+  dlBtn.title = 'Download original audio';
 
   const fieldsHost = renderCustomFieldsForm(customHost, schemasByCategory.bgm.fields, meta?.fields ?? {}, () => updateSaveState());
 
   function updateSaveState(): void {
     const raw = nameInput.value.trim();
     const v = parseFloat(volIn.value);
-    const fi = parseFloat(fadeInIn.value);
-    const fo = parseFloat(fadeOutIn.value);
     const changed = raw !== initialName
       || Math.abs(v - initialVol) > 0.001
-      || Math.abs(fi - initialFadeIn) > 0.001
-      || Math.abs(fo - initialFadeOut) > 0.001
       || loopIn.checked !== initialLoop
+      || catSel.value !== initialCat
+      || memoIn.value !== initialMemo
       || fieldsHost.changed();
     saveBtn.disabled = !changed || raw.length === 0;
   }
   nameInput.oninput = updateSaveState;
   volIn.oninput = () => { volVal.textContent = parseFloat(volIn.value).toFixed(2); updateSaveState(); };
-  fadeInIn.oninput = updateSaveState;
-  fadeOutIn.oninput = updateSaveState;
+  catSel.onchange = updateSaveState;
   loopIn.onchange = updateSaveState;
+  memoIn.oninput = updateSaveState;
 
   saveBtn.onclick = async (): Promise<void> => {
     saveBtn.disabled = true;
@@ -863,9 +944,9 @@ function renderAudioDetail(it: BlobItem | null): void {
       const newMeta: AudioMeta = {
         name: nameInput.value.trim(),
         volume: parseFloat(volIn.value),
-        fadeIn: parseFloat(fadeInIn.value),
-        fadeOut: parseFloat(fadeOutIn.value),
         loop: loopIn.checked,
+        category: catSel.value as AudioCategory,
+        memo: memoIn.value || undefined,
         fields,
       };
       const metaName = `${baseName}.meta.json`;
@@ -903,11 +984,11 @@ const BUILTIN_FIELDS: Record<SchemaCat, { key: string; label: string; type: stri
     { key: 'name', label: 'Name', type: 'text', note: 'display name (separate from filename)' },
   ],
   bgm: [
-    { key: 'name',    label: 'Name',           type: 'text' },
-    { key: 'volume',  label: 'Default volume', type: 'number', note: '0.0 – 1.0' },
-    { key: 'fadeIn',  label: 'Fade in (sec)',  type: 'number' },
-    { key: 'fadeOut', label: 'Fade out (sec)', type: 'number' },
-    { key: 'loop',    label: 'Loop',           type: 'boolean' },
+    { key: 'name',     label: 'Name',           type: 'text' },
+    { key: 'volume',   label: 'Default volume', type: 'number', note: '0.0 – 1.0' },
+    { key: 'category', label: 'Category',       type: 'select', note: 'bgm / effect' },
+    { key: 'loop',     label: 'Loop',           type: 'boolean' },
+    { key: 'memo',     label: 'Memo',           type: 'text' },
   ],
 };
 
@@ -1320,14 +1401,13 @@ async function handleFiles(files: FileList | File[]): Promise<void> {
     }
     if (activeCat === 'characters') {
       if (isLpcZipFile(f)) {
-        // LPC Split-by-Animation ZIP — 풀어서 액션별 PNG 업로드
         await uploadCharacterZipWithModal(f);
       } else {
-        // 단일 PNG — 기존 흐름
         await uploadCharacterWithModal(f);
       }
+    } else if (activeCat === 'bgm') {
+      await uploadAudioWithModal(f);
     } else {
-      // Maps / Audio 는 기존 흐름 — 즉시 업로드
       await uploadOne(f, f.name);
     }
   }
@@ -1492,7 +1572,8 @@ async function uploadCharacterZipWithModal(zipFile: File): Promise<void> {
       if (!raw || isCharNameTaken(raw)) { validate(); return; }
       const cleaned = raw.replace(/[\/\\]/g, '_');
       cleanup();
-      await uploadZipCharacter(parsed, cleaned, raw, bodySel.value as BodyType, raceInput.value.trim());
+      // 원본 ZIP 도 함께 보관 (다운로드용)
+      await uploadZipCharacter(parsed, cleaned, raw, bodySel.value as BodyType, raceInput.value.trim(), zipFile);
     };
     submitBtn.onclick = () => { void doUpload(); };
     cancelBtn.onclick = cleanup;
@@ -1506,7 +1587,7 @@ async function uploadCharacterZipWithModal(zipFile: File): Promise<void> {
 /** ZIP 캐릭터를 Blob 에 폴더 구조로 업로드. characters/<base>/{thumbnail.png, anims/*.png, meta.json}. */
 async function uploadZipCharacter(
   parsed: ParsedLpcZip, baseName: string, displayName: string,
-  body: BodyType, race: string,
+  body: BodyType, race: string, originalZip: File,
 ): Promise<void> {
   const progressEl = document.getElementById('upload-progress')!;
   const row = document.createElement('div');
@@ -1519,7 +1600,8 @@ async function uploadZipCharacter(
 
   // 폴더 prefix 로 업로드 — file.name 에 슬래시가 들어가면 Blob pathname 에 그대로 반영됨.
   const animUrls: Record<string, string> = {};
-  const totalFiles = parsed.animFiles.size + (parsed.thumbnail ? 1 : 0) + 1; // anims + thumb + meta
+  let originalZipUrl: string | undefined;
+  const totalFiles = parsed.animFiles.size + (parsed.thumbnail ? 1 : 0) + 2; // anims + thumb + original.zip + meta
   let done = 0;
   const tick = (): void => {
     done++;
@@ -1544,7 +1626,13 @@ async function uploadZipCharacter(
       animUrls[anim] = blob.url;
       tick();
     }
-    // 3) meta.json (마지막에 — anims URL 다 모은 다음)
+    // 3) 원본 ZIP — 다운로드용 (re-import / 백업 용도)
+    nameEl.textContent = `${displayName} — original.zip`;
+    const origFile = new File([originalZip], `${baseName}/original.zip`, { type: 'application/zip' });
+    const origBlob = await uploadAsset(token, 'characters', origFile);
+    originalZipUrl = origBlob.url;
+    tick();
+    // 4) meta.json (마지막에 — anims URL 다 모은 다음)
     nameEl.textContent = `${displayName} — metadata`;
     const meta = {
       schema: 1,
@@ -1557,6 +1645,7 @@ async function uploadZipCharacter(
       actions: parsed.standardAnims.filter((a) => Object.prototype.hasOwnProperty.call(ANIMATION_CONFIGS, a)) as LPCAction[],
       anims: animUrls,
       customAnims: parsed.customAnims,
+      originalZipUrl,
       character: parsed.character ?? null,
       detectedAt: new Date().toISOString(),
     };
@@ -1701,6 +1790,144 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
       else if (e.key === 'Escape') { cleanup(); }
     };
   });
+}
+
+/** Audio 업로드 모달 — 미리듣기 + 이름/카테고리/loop/memo 입력 후 업로드. */
+async function uploadAudioWithModal(file: File): Promise<void> {
+  const audioLoadedP = ensureAudioLoaded();
+
+  const modal = document.getElementById('audio-upload-modal')!;
+  const player = document.getElementById('au-player') as HTMLAudioElement;
+  const fnameEl = document.getElementById('au-filename')!;
+  const nameInput = document.getElementById('au-name') as HTMLInputElement;
+  const catSel = document.getElementById('au-category') as HTMLSelectElement;
+  const loopIn = document.getElementById('au-loop') as HTMLInputElement;
+  const memoIn = document.getElementById('au-memo') as HTMLTextAreaElement;
+  const warnEl = document.getElementById('au-warn')!;
+  const submitBtn = document.getElementById('au-submit') as HTMLButtonElement;
+  const cancelBtn = document.getElementById('au-cancel') as HTMLButtonElement;
+
+  const baseFromFile = file.name.replace(/\.[^.]+$/, '');
+  nameInput.value = baseFromFile;
+  catSel.value = /\.(wav|aiff?|aifc)$/i.test(file.name) ? 'effect' : 'bgm';
+  loopIn.checked = true;
+  memoIn.value = '';
+  fnameEl.textContent = `${file.name} · ${fmtSize(file.size)}`;
+  warnEl.classList.add('hidden');
+
+  const previewUrl = URL.createObjectURL(file);
+  player.src = previewUrl;
+  player.load();
+
+  modal.classList.remove('hidden');
+  submitBtn.disabled = false;
+  nameInput.focus();
+  nameInput.select();
+
+  const validate = (): void => {
+    const raw = nameInput.value.trim();
+    if (!raw) {
+      warnEl.textContent = 'Name is required.';
+      warnEl.classList.remove('hidden');
+      submitBtn.disabled = true; return;
+    }
+    if (isAudioNameTaken(raw)) {
+      warnEl.textContent = `An audio named "${raw}" already exists.`;
+      warnEl.classList.remove('hidden');
+      submitBtn.disabled = true; return;
+    }
+    warnEl.classList.add('hidden');
+    submitBtn.disabled = false;
+  };
+  nameInput.addEventListener('input', validate);
+  validate();
+
+  void audioLoadedP.then(() => {
+    if (nameInput.value === baseFromFile && isAudioNameTaken(baseFromFile)) {
+      nameInput.value = suggestUniqueAudioName(baseFromFile);
+      nameInput.select();
+    }
+    validate();
+  });
+
+  await new Promise<void>((resolve) => {
+    const cleanup = (): void => {
+      try { player.pause(); } catch { /* noop */ }
+      player.removeAttribute('src');
+      player.load();
+      URL.revokeObjectURL(previewUrl);
+      modal.classList.add('hidden');
+      submitBtn.onclick = null;
+      cancelBtn.onclick = null;
+      nameInput.onkeydown = null;
+      nameInput.removeEventListener('input', validate);
+      resolve();
+    };
+    const doUpload = async (): Promise<void> => {
+      const raw = nameInput.value.trim();
+      if (!raw || isAudioNameTaken(raw)) { validate(); return; }
+      const ext = (file.name.split('.').pop() ?? 'mp3').toLowerCase();
+      const cleaned = raw.replace(/[\/\\]/g, '_');
+      const cat = catSel.value as AudioCategory;
+      const loop = loopIn.checked;
+      const memo = memoIn.value.trim() || undefined;
+      const renamed = new File([file], `${cleaned}.${ext}`, { type: file.type });
+      cleanup();
+      await uploadAudioFile(renamed, cleaned, raw, cat, loop, memo);
+    };
+    submitBtn.onclick = () => { void doUpload(); };
+    cancelBtn.onclick = cleanup;
+    nameInput.onkeydown = (e) => {
+      if (e.key === 'Enter' && !submitBtn.disabled) { e.preventDefault(); void doUpload(); }
+      else if (e.key === 'Escape') { cleanup(); }
+    };
+  });
+}
+
+/** Audio 파일 + .meta.json 업로드 (진행률 표시 포함). */
+async function uploadAudioFile(
+  file: File, baseName: string, displayName: string,
+  category: AudioCategory, loop: boolean, memo: string | undefined,
+): Promise<void> {
+  const progressEl = document.getElementById('upload-progress')!;
+  const row = document.createElement('div');
+  row.className = 'lib-progress-row';
+  row.innerHTML = `<span class="name"></span><span class="bar"><div style="width:0%"></div></span><span class="pct">0%</span>`;
+  progressEl.appendChild(row);
+  const bar = row.querySelector('.bar > div') as HTMLDivElement;
+  const pct = row.querySelector('.pct') as HTMLSpanElement;
+  const nameEl = row.querySelector('.name')!;
+  nameEl.textContent = file.name;
+
+  try {
+    await uploadAsset(token, 'bgm', file, (loaded, total) => {
+      const p = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      bar.style.width = p + '%';
+      pct.textContent = p + '%';
+    });
+    const metaName = `${baseName}.meta.json`;
+    const meta = {
+      schema: 1,
+      name: displayName,
+      volume: 0.7,
+      loop,
+      category,
+      memo,
+      savedAt: new Date().toISOString(),
+    };
+    const metaFile = new File([JSON.stringify(meta, null, 2)], metaName, { type: 'application/json' });
+    await uploadAsset(token, 'bgm', metaFile);
+    row.classList.add('ok');
+    pct.textContent = 'OK';
+  } catch (e) {
+    row.classList.add('err');
+    pct.textContent = 'ERR';
+    const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+    nameEl.textContent = `${file.name} — ${msg}`;
+    if (e instanceof AuthError) { clearToken(); }
+  }
+  setTimeout(() => row.remove(), 5000);
+  refreshList();
 }
 
 function ready(fn: () => void): void {

@@ -209,6 +209,44 @@
   white-space: nowrap;
 }
 .lib-detail-meta-row .st-btn { padding: 3px 12px; font-size: var(--fs-xs); }
+.lib-detail-meta-row a.st-btn {
+  text-decoration: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 3px 8px;
+}
+
+/* Audio 업로드 모달의 오디오 미리듣기 */
+.cu-audio-preview {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg);
+  padding: 8px;
+}
+.cu-audio-preview audio {
+  width: 100%;
+  max-width: 144px;
+}
+.cu-inline-label {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px !important;
+}
+.cu-inline-label input[type=checkbox] {
+  width: 14px; height: 14px;
+  accent-color: var(--accent);
+  margin: 0;
+}
+.cu-name-label textarea {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 9px;
+  font: inherit;
+  font-family: var(--font-stack);
+  font-size: var(--fs-sm);
+  resize: vertical;
+  min-height: 50px;
+}
+.cu-name-label textarea:focus { outline: none; border-color: var(--accent); }
 
 /* Maps detail — 통계 표 */
 .lib-detail-stats {

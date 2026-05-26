@@ -72,6 +72,7 @@
               <p id="detail-warn" class="auth-error hidden"></p>
               <div class="lib-detail-meta-row">
                 <span id="detail-sub" class="lib-detail-sub"></span>
+                <a id="detail-download" class="st-btn" type="button">⬇</a>
                 <button id="detail-save" class="st-btn st-btn-primary" type="button" disabled>Save</button>
               </div>
             </div>
@@ -94,6 +95,7 @@
               <p id="map-warn" class="auth-error hidden"></p>
               <div class="lib-detail-meta-row">
                 <span id="map-sub" class="lib-detail-sub"></span>
+                <a id="map-download" class="st-btn" type="button">⬇</a>
                 <button id="map-save" class="st-btn st-btn-primary" type="button" disabled>Save</button>
               </div>
             </div>
@@ -117,20 +119,24 @@
                   <span id="audio-volume-val">0.70</span>
                 </div>
               </label>
-              <label class="lib-field">Fade in (sec)
-                <input id="audio-fadein" type="number" min="0" max="10" step="0.1" />
-              </label>
-              <label class="lib-field">Fade out (sec)
-                <input id="audio-fadeout" type="number" min="0" max="10" step="0.1" />
+              <label class="lib-field">Category
+                <select id="audio-category">
+                  <option value="bgm">BGM</option>
+                  <option value="effect">Effect</option>
+                </select>
               </label>
               <label class="lib-field lib-field-inline">
                 <input id="audio-loop" type="checkbox" />
                 <span>Loop by default</span>
               </label>
+              <label class="lib-field">Memo
+                <textarea id="audio-memo" rows="2" placeholder="optional note"></textarea>
+              </label>
               <div id="audio-custom-fields" class="lib-detail-custom"></div>
               <p id="audio-warn" class="auth-error hidden"></p>
               <div class="lib-detail-meta-row">
                 <span id="audio-sub" class="lib-detail-sub"></span>
+                <a id="audio-download" class="st-btn" type="button">⬇</a>
                 <button id="audio-save" class="st-btn st-btn-primary" type="button" disabled>Save</button>
               </div>
             </div>
@@ -148,6 +154,42 @@
           <button id="auth-submit" class="st-btn st-btn-primary" type="button">Sign in</button>
         </div>
         <p id="auth-error" class="auth-error hidden"></p>
+      </div>
+    </div>
+
+    <!-- 오디오 업로드 확인 모달 — 미리듣기 + 이름/카테고리/메모 입력 후 업로드 -->
+    <div id="audio-upload-modal" class="auth-modal hidden">
+      <div class="auth-box cu-box">
+        <h2>Upload audio</h2>
+        <p id="au-filename" class="cu-filename"></p>
+        <div class="cu-preview-row">
+          <div class="cu-preview cu-audio-preview">
+            <audio id="au-player" controls preload="metadata"></audio>
+          </div>
+          <div class="cu-info">
+            <label class="cu-name-label">Name
+              <input id="au-name" type="text" autocomplete="off" />
+            </label>
+            <label class="cu-name-label">Category
+              <select id="au-category">
+                <option value="bgm">BGM</option>
+                <option value="effect">Effect</option>
+              </select>
+            </label>
+            <label class="cu-name-label cu-inline-label">
+              <input id="au-loop" type="checkbox" />
+              <span>Loop by default</span>
+            </label>
+            <label class="cu-name-label">Memo
+              <textarea id="au-memo" rows="2" placeholder="optional note"></textarea>
+            </label>
+            <p id="au-warn" class="auth-error hidden"></p>
+          </div>
+        </div>
+        <div class="auth-actions">
+          <button id="au-cancel" class="st-btn" type="button">Cancel</button>
+          <button id="au-submit" class="st-btn st-btn-primary" type="button">Upload</button>
+        </div>
       </div>
     </div>
 
