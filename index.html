@@ -173,6 +173,30 @@
       </div>
     </div>
 
+    <!-- 맵 업로드 확인 모달 (ZIP) — 이름 입력 + ZIP 안 파일 목록/통계 표시 후 업로드 -->
+    <div id="map-upload-modal" class="auth-modal hidden">
+      <div class="auth-box cu-box">
+        <h2>Upload map</h2>
+        <p id="mu-filename" class="cu-filename"></p>
+        <div class="cu-preview-row">
+          <div class="cu-info" style="grid-column: 1 / -1;">
+            <label class="cu-name-label">Name
+              <input id="mu-name" type="text" autocomplete="off" />
+            </label>
+            <div class="cu-actions-label">Map info</div>
+            <div id="mu-stats" class="lib-detail-stats"></div>
+            <div class="cu-actions-label">Files in ZIP</div>
+            <div id="mu-files" class="lib-tags"></div>
+            <p id="mu-warn" class="auth-error hidden"></p>
+          </div>
+        </div>
+        <div class="auth-actions">
+          <button id="mu-cancel" class="st-btn" type="button">Cancel</button>
+          <button id="mu-submit" class="st-btn st-btn-primary" type="button">Upload</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 오디오 업로드 확인 모달 — 미리듣기 + 이름/카테고리/메모 입력 후 업로드 -->
     <div id="audio-upload-modal" class="auth-modal hidden">
       <div class="auth-box cu-box">

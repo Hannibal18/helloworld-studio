@@ -120,3 +120,77 @@ function stripCategory(pathname: string): string {
 export function entryFormat(entryPathname: string, metaFormat?: CharFormat): CharFormat {
   return metaFormat ?? (isZipEntryPath(entryPathname) ? 'zip' : 'single');
 }
+
+// ──────────────────────────────────────────────────────────────
+// Maps — 두 가지 저장 포맷이 공존:
+//   - legacy single:   maps/foo.json + maps/foo.meta.json
+//   - ZIP folder:      maps/Foo/main.json + maps/Foo/<tileset>.tsj/.png +
+//                      maps/Foo/original.zip + maps/Foo/meta.json
+//
+// ZIP 의 경우 메인 맵 JSON 을 항상 'main.json' 으로 정규화해서 대표 entry pathname 이 일관.
+// JSON 안 tileset 참조는 상대경로(`source: "forest_tiles.tsj"`)라서 이름 바꿔도 동작.
+
+export const MAP_PREFIX = 'maps';
+export const MAP_MAIN_FILE = 'main.json';
+
+export function isZipMapEntryPath(pathname: string): boolean {
+  return pathname.startsWith(MAP_PREFIX + '/') && pathname.endsWith('/' + MAP_MAIN_FILE);
+}
+
+export function isMapEntryPath(pathname: string): boolean {
+  if (!pathname.startsWith(MAP_PREFIX + '/')) return false;
+  if (pathname.endsWith(LEGACY_META_EXT)) return false;
+  if (pathname.endsWith('/' + META_FILE)) return false;
+  const tail = pathname.slice(MAP_PREFIX.length + 1);
+  // 'foo.json' (슬래시 없음) → legacy 단일 파일 entry
+  if (!tail.includes('/')) {
+    const lower = tail.toLowerCase();
+    return lower.endsWith('.json') || lower.endsWith('.tmj') || lower.endsWith('.tmx');
+  }
+  // 'Foo/main.json' → ZIP entry. 'Foo/forest_tiles.tsj' 같은 사이드 파일은 entry 가 아님.
+  return tail.endsWith('/' + MAP_MAIN_FILE);
+}
+
+/** 메타 sidecar pathname → 대응하는 맵 entry pathname (대표 파일). */
+export function mapEntryPathForSidecar(sidecarPathname: string): string {
+  if (sidecarPathname.endsWith('/' + META_FILE)) {
+    return sidecarPathname.replace(/\/meta\.json$/, '/' + MAP_MAIN_FILE);
+  }
+  // legacy: maps/foo.meta.json → maps/foo.json
+  return sidecarPathname.replace(/\.meta\.json$/, '.json');
+}
+
+/** 맵 entry pathname → 표시용 base 이름. */
+export function mapBaseName(pathname: string): string {
+  if (isZipMapEntryPath(pathname)) {
+    const after = pathname.slice(MAP_PREFIX.length + 1);
+    return after.slice(0, after.length - (MAP_MAIN_FILE.length + 1));
+  }
+  // legacy: maps/foo.json → foo
+  const filename = pathname.slice(pathname.lastIndexOf('/') + 1);
+  return filename.replace(/\.[^.]+$/, '');
+}
+
+/** 맵 entry URL → 메타 파일 URL. Vercel Blob URL 구조 가정. */
+export function mapMetaUrlForEntry(entryUrl: string, entryPathname: string): string {
+  return isZipMapEntryPath(entryPathname)
+    ? entryUrl.replace(/\/main\.json$/, '/' + META_FILE)
+    : entryUrl.replace(/\.json$/i, LEGACY_META_EXT);
+}
+
+/** uploadAsset(file) 용 filename — uploadAsset 이 maps/ 를 prefix 로 붙임. */
+export function mapMainFilenameFor(baseName: string): string {
+  return `${baseName}/${MAP_MAIN_FILE}`;
+}
+export function mapSideFilenameFor(baseName: string, innerFilename: string): string {
+  return `${baseName}/${innerFilename}`;
+}
+export function mapOriginalZipFilenameFor(baseName: string): string {
+  return `${baseName}/${ORIGINAL_ZIP_FILE}`;
+}
+export function mapMetaFilenameFor(baseName: string): string {
+  return `${baseName}/${META_FILE}`;
+}
+export function mapFolderPrefix(baseName: string): string {
+  return `${MAP_PREFIX}/${baseName}/`;
+}
