@@ -360,14 +360,13 @@ function renderDetail(it: BlobItem | null): void {
     }
   };
 
-  // 초기 프레임: idle down
-  loadSheet(it.url, (img) => drawIdleFrame(canvas, img));
-
   // 액션 버튼
   actionsEl.innerHTML = '';
   const actions = meta?.actions ?? [];
   if (actions.length === 0) {
     actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">no actions detected</span>';
+    // 액션 없으면 정적 idle 프레임만 그림
+    loadSheet(it.url, (img) => drawIdleFrame(canvas, img));
     return;
   }
   for (const a of actions) {
@@ -377,6 +376,13 @@ function renderDetail(it: BlobItem | null): void {
     btn.dataset.action = a;
     btn.addEventListener('click', () => playAction(a, it.url, canvas, actionsEl));
     actionsEl.appendChild(btn);
+  }
+
+  // 기본 재생: idle 액션이 있으면 그걸 자동 재생, 없으면 정적 idle 프레임
+  if (actions.includes('idle')) {
+    playAction('idle', it.url, canvas, actionsEl);
+  } else {
+    loadSheet(it.url, (img) => drawIdleFrame(canvas, img));
   }
 }
 
