@@ -11,6 +11,10 @@ import {
   detectActionsFromFile, ANIMATION_CONFIGS, FRAME_SIZE,
   type LPCAction,
 } from './lpc-detect';
+import {
+  schemasByCategory, loadAllSchemas, saveSchema,
+  type FieldDef, type FieldType, type SchemaCat,
+} from './schema';
 
 type Category = 'maps' | 'characters' | 'bgm';
 const EXT_BY_CAT: Record<Category, string[]> = {
@@ -29,6 +33,7 @@ interface CharMeta {
   body?: BodyType;
   name?: string;        // 표시용 이름 (파일명과 분리)
   race?: string;        // 종족 — 자유 텍스트 (human, lizard, wolfman, ...)
+  fields?: Record<string, string>;  // 사용자 정의 스키마 필드값
   uploadedAt?: string;
 }
 
@@ -333,26 +338,33 @@ function renderDetail(it: BlobItem | null): void {
   subEl.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   saveBtn.disabled = true;
 
+  // 커스텀 스키마 필드 폼 렌더
+  const customFieldsHost = renderCustomFieldsForm(formEl, schemasByCategory.characters.fields, meta?.fields ?? {}, onAnyChange);
+
   // 변경 감지
-  const onChange = (): void => {
+  function onAnyChange(): void {
+    const customChanged = customFieldsHost.changed();
     const changed = nameInput.value.trim() !== initialName
       || bodySel.value !== initialBody
-      || raceInput.value.trim() !== initialRace;
+      || raceInput.value.trim() !== initialRace
+      || customChanged;
     saveBtn.disabled = !changed || nameInput.value.trim().length === 0;
-  };
-  nameInput.oninput = onChange;
-  bodySel.onchange = onChange;
-  raceInput.oninput = onChange;
+  }
+  nameInput.oninput = onAnyChange;
+  bodySel.onchange = onAnyChange;
+  raceInput.oninput = onAnyChange;
 
   saveBtn.onclick = async (): Promise<void> => {
     saveBtn.disabled = true;
     saveBtn.textContent = 'Saving…';
     try {
+      const newFields = customFieldsHost.values();
       const newMeta: CharMeta = {
         actions: meta?.actions ?? [],
         body: bodySel.value as BodyType,
         name: nameInput.value.trim(),
         race: raceInput.value.trim() || undefined,
+        fields: newFields,
       };
       const metaName = `${charBaseName(it.pathname)}.meta.json`;
       const metaBody = JSON.stringify({
@@ -362,6 +374,7 @@ function renderDetail(it: BlobItem | null): void {
         name: newMeta.name,
         race: newMeta.race,
         actions: newMeta.actions,
+        fields: newFields,
         savedAt: new Date().toISOString(),
       }, null, 2);
       const metaFile = new File([metaBody], metaName, { type: 'application/json' });
@@ -369,7 +382,6 @@ function renderDetail(it: BlobItem | null): void {
       charMetaByPath.set(it.pathname, newMeta);
       showToast('Saved');
       saveBtn.textContent = 'Save';
-      // 리스트 다시 그리기 — 표시 이름/성별이 바뀜
       refreshList();
     } catch (e) {
       const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
@@ -405,159 +417,316 @@ function renderDetail(it: BlobItem | null): void {
   }
 }
 
-// ===== Settings 패널 =====
+// ===== Settings 패널 — 카테고리별 메타 필드 스키마 편집 =====
+
+const CATEGORY_LABEL: Record<SchemaCat, string> = {
+  maps: 'Maps', characters: 'Characters', bgm: 'Audio',
+};
+
+// 빌트인(시스템) 필드 — 스키마 에디터에서 read-only 로 표시.
+const BUILTIN_FIELDS: Record<SchemaCat, { key: string; label: string; type: string; note?: string }[]> = {
+  characters: [
+    { key: 'name',    label: 'Name',    type: 'text' },
+    { key: 'body',    label: 'Body',    type: 'select', note: 'male / female / none' },
+    { key: 'race',    label: 'Race',    type: 'text' },
+    { key: 'actions', label: 'Actions', type: 'list',   note: 'auto-detected from sprite sheet' },
+  ],
+  maps: [],
+  bgm: [],
+};
 
 async function renderSettings(): Promise<void> {
   const titleEl = document.getElementById('settings-title')!;
   const hintEl = document.getElementById('settings-hint')!;
   const bodyEl = document.getElementById('settings-body')!;
+  const cat = activeCat;
+  titleEl.textContent = `${CATEGORY_LABEL[cat]} · Settings`;
+  hintEl.textContent = 'Define custom metadata fields collected for each item in this category.';
+  renderSchemaEditor(bodyEl, cat);
+}
 
-  if (activeCat === 'characters') {
-    titleEl.textContent = 'Characters · Settings';
-    hintEl.textContent = 'Edit name, body type, and race for each character. Changes are saved per row.';
-    bodyEl.innerHTML = '<div class="lib-settings-empty">Loading…</div>';
+function renderSchemaEditor(container: HTMLElement, cat: SchemaCat): void {
+  container.innerHTML = '';
 
-    // 캐릭터 목록 + sidecar meta 로드
-    const all = await listAssets(token, 'characters');
-    const items: BlobItem[] = [];
-    const sidecars: BlobItem[] = [];
-    for (const it of all) (it.pathname.endsWith('.meta.json') ? sidecars : items).push(it);
+  // 빌트인 필드 섹션
+  if (BUILTIN_FIELDS[cat].length > 0) {
+    const sec = document.createElement('section');
+    sec.className = 'schema-section';
+    sec.innerHTML = `<h4 class="schema-section-title">Built-in fields</h4>`;
+    const ul = document.createElement('ul');
+    ul.className = 'schema-builtin';
+    for (const f of BUILTIN_FIELDS[cat]) {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="bf-label">${escapeHtml(f.label)}</span>
+        <span class="bf-key">${escapeHtml(f.key)}</span>
+        <span class="bf-type">${escapeHtml(f.type)}</span>
+        <span class="bf-note">${escapeHtml(f.note ?? '')}</span>`;
+      ul.appendChild(li);
+    }
+    sec.appendChild(ul);
+    container.appendChild(sec);
+  }
 
-    await Promise.all(sidecars.map(async (s) => {
-      try {
-        const r = await fetch(s.url);
-        if (!r.ok) return;
-        const j = await r.json() as { actions?: LPCAction[]; body?: BodyType; name?: string; race?: string };
-        const pngPath = s.pathname.replace(/\.meta\.json$/, '.png');
-        if (Array.isArray(j.actions)) {
-          charMetaByPath.set(pngPath, { actions: j.actions, body: j.body, name: j.name, race: j.race });
-        }
-      } catch { /* 무시 */ }
-    }));
+  // 커스텀 필드 섹션
+  const sec = document.createElement('section');
+  sec.className = 'schema-section';
+  const headRow = document.createElement('div');
+  headRow.className = 'schema-section-head';
+  headRow.innerHTML = `<h4 class="schema-section-title">Custom fields</h4>`;
+  const addBtn = document.createElement('button');
+  addBtn.className = 'st-btn st-btn-primary';
+  addBtn.type = 'button';
+  addBtn.textContent = '+ Add field';
+  headRow.appendChild(addBtn);
+  sec.appendChild(headRow);
 
-    if (items.length === 0) {
-      bodyEl.innerHTML = '<div class="lib-settings-empty">No characters uploaded yet.</div>';
+  const rows = document.createElement('div');
+  rows.className = 'schema-rows';
+  sec.appendChild(rows);
+  container.appendChild(sec);
+
+  const draftFields: FieldDef[] = JSON.parse(JSON.stringify(schemasByCategory[cat].fields));
+
+  const repaint = (): void => {
+    rows.innerHTML = '';
+    if (draftFields.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'lib-settings-empty';
+      empty.textContent = 'No custom fields yet. Click + Add field to define one.';
+      rows.appendChild(empty);
       return;
     }
-    const rows = document.createElement('div');
-    rows.className = 'lib-settings-rows';
-    for (const it of items) rows.appendChild(makeSettingsRow(it));
-    bodyEl.innerHTML = '';
-    bodyEl.appendChild(rows);
-    return;
-  }
-
-  // Maps / Audio — 향후 확장
-  const labelByCat: Record<Exclude<Category, 'characters'>, string> = { maps: 'Maps', bgm: 'Audio' };
-  titleEl.textContent = `${labelByCat[activeCat as 'maps' | 'bgm']} · Settings`;
-  hintEl.textContent = 'No metadata to manage for this category yet.';
-  bodyEl.innerHTML = '<div class="lib-settings-empty">Per-asset settings for Maps and Audio are not yet implemented.</div>';
-}
-
-function makeSettingsRow(it: BlobItem): HTMLElement {
-  const row = document.createElement('div');
-  row.className = 'lib-settings-row';
-  const meta = charMetaByPath.get(it.pathname);
-  const initialName = meta?.name ?? charBaseName(it.pathname);
-  const initialBody = meta?.body ?? 'none';
-  const initialRace = meta?.race ?? '';
-
-  // 썸네일
-  const thumb = document.createElement('div');
-  thumb.className = 'thumb';
-  const c = document.createElement('canvas');
-  c.width = 36; c.height = 36;
-  thumb.appendChild(c);
-  loadSheet(it.url, (img) => drawCharacterThumb(c, img));
-
-  // Name
-  const nameIn = document.createElement('input');
-  nameIn.type = 'text'; nameIn.value = initialName; nameIn.placeholder = 'Name';
-
-  // Body
-  const bodySel = document.createElement('select');
-  for (const [v, l] of [['male', 'Male'], ['female', 'Female'], ['none', 'None']] as const) {
-    const o = document.createElement('option');
-    o.value = v; o.textContent = l;
-    if (v === initialBody) o.selected = true;
-    bodySel.appendChild(o);
-  }
-
-  // Race
-  const raceIn = document.createElement('input');
-  raceIn.type = 'text'; raceIn.value = initialRace; raceIn.placeholder = 'race';
-
-  // Save
-  const saveBtn = document.createElement('button');
-  saveBtn.className = 'st-btn st-btn-primary save-btn';
-  saveBtn.type = 'button';
-  saveBtn.textContent = 'Save';
-  saveBtn.disabled = true;
-
-  const onChange = (): void => {
-    const changed = nameIn.value.trim() !== initialName
-      || bodySel.value !== initialBody
-      || raceIn.value.trim() !== initialRace;
-    saveBtn.disabled = !changed || nameIn.value.trim().length === 0;
+    for (let i = 0; i < draftFields.length; i++) {
+      rows.appendChild(makeFieldRow(draftFields, i, markDirty));
+    }
   };
-  nameIn.addEventListener('input', onChange);
-  bodySel.addEventListener('change', onChange);
-  raceIn.addEventListener('input', onChange);
 
+  // 변경 감지 + Save 버튼
+  const footRow = document.createElement('div');
+  footRow.className = 'schema-foot';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'st-btn st-btn-primary';
+  saveBtn.type = 'button';
+  saveBtn.textContent = 'Save schema';
+  saveBtn.disabled = true;
+  const revertBtn = document.createElement('button');
+  revertBtn.className = 'st-btn';
+  revertBtn.type = 'button';
+  revertBtn.textContent = 'Revert';
+  revertBtn.disabled = true;
+  footRow.appendChild(revertBtn);
+  footRow.appendChild(saveBtn);
+  container.appendChild(footRow);
+
+  function markDirty(): void {
+    saveBtn.disabled = false; revertBtn.disabled = false;
+  }
+  addBtn.addEventListener('click', () => {
+    draftFields.push({ key: '', label: '', type: 'text' });
+    repaint();
+    markDirty();
+  });
   saveBtn.addEventListener('click', async () => {
-    saveBtn.disabled = true; saveBtn.textContent = '…';
+    // 검증: key 비어있거나 중복이면 거부
+    const keys = new Set<string>();
+    for (const f of draftFields) {
+      const k = f.key.trim();
+      if (!k) { showToast('Field key is required', 'err'); return; }
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(k)) {
+        showToast(`Invalid key '${k}' — use letters/digits/underscore`, 'err'); return;
+      }
+      if (keys.has(k)) { showToast(`Duplicate key '${k}'`, 'err'); return; }
+      keys.add(k);
+      if (f.type === 'select' && (!f.options || f.options.length === 0)) {
+        showToast(`Field '${f.label || k}' is select but has no options`, 'err'); return;
+      }
+    }
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
     try {
-      const metaName = `${charBaseName(it.pathname)}.meta.json`;
-      const newMeta = {
-        schema: 1,
-        source: 'lpc',
-        body: bodySel.value as BodyType,
-        name: nameIn.value.trim(),
-        race: raceIn.value.trim() || undefined,
-        actions: meta?.actions ?? [],
-        savedAt: new Date().toISOString(),
-      };
-      const file = new File([JSON.stringify(newMeta, null, 2)], metaName, { type: 'application/json' });
-      await uploadAsset(token, 'characters', file);
-      charMetaByPath.set(it.pathname, {
-        actions: newMeta.actions, body: newMeta.body,
-        name: newMeta.name, race: newMeta.race,
-      });
-      showToast('Saved');
-      saveBtn.textContent = 'Saved';
-      window.setTimeout(() => { saveBtn.textContent = 'Save'; }, 1500);
+      schemasByCategory[cat].fields = draftFields.map((f) => ({
+        key: f.key.trim(),
+        label: f.label.trim() || f.key.trim(),
+        type: f.type,
+        options: f.type === 'select' ? (f.options ?? []) : undefined,
+        default: f.default || undefined,
+      }));
+      await saveSchema(token, cat);
+      showToast('Schema saved');
+      saveBtn.textContent = 'Save schema';
+      revertBtn.disabled = true;
     } catch (e) {
-      saveBtn.textContent = 'Save';
-      saveBtn.disabled = false;
       const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
       showToast(msg, 'err');
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save schema';
     }
   });
+  revertBtn.addEventListener('click', () => {
+    // 원본으로 되돌림
+    draftFields.length = 0;
+    for (const f of schemasByCategory[cat].fields) draftFields.push(JSON.parse(JSON.stringify(f)));
+    repaint();
+    saveBtn.disabled = true;
+    revertBtn.disabled = true;
+  });
 
-  // Delete
+  repaint();
+}
+
+// detail 폼 안에 스키마 기반 커스텀 필드 영역 렌더. host.values() / host.changed() 로 상태 조회.
+function renderCustomFieldsForm(
+  formEl: HTMLElement,
+  schemaFields: FieldDef[],
+  initial: Record<string, string>,
+  onChange: () => void,
+): { values: () => Record<string, string>; changed: () => boolean } {
+  // 컨테이너 비우고 새로 그림
+  let host = formEl.querySelector<HTMLDivElement>('#detail-custom-fields');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'detail-custom-fields';
+    host.className = 'lib-detail-custom';
+    formEl.appendChild(host);
+  }
+  host.innerHTML = '';
+
+  if (schemaFields.length === 0) {
+    return { values: () => ({}), changed: () => false };
+  }
+
+  const inputs = new Map<string, HTMLInputElement | HTMLSelectElement>();
+  const initialSnap: Record<string, string> = {};
+
+  for (const f of schemaFields) {
+    const cur = initial[f.key] ?? f.default ?? '';
+    initialSnap[f.key] = cur;
+    const wrap = document.createElement('label');
+    wrap.className = 'lib-field';
+    wrap.textContent = f.label || f.key;
+    if (f.type === 'select') {
+      const sel = document.createElement('select');
+      // 기본 옵션 빈 항목 (선택 안 됐을 때)
+      const empty = document.createElement('option');
+      empty.value = ''; empty.textContent = '— select —';
+      sel.appendChild(empty);
+      for (const o of f.options ?? []) {
+        const op = document.createElement('option');
+        op.value = o; op.textContent = o;
+        if (o === cur) op.selected = true;
+        sel.appendChild(op);
+      }
+      if (cur === '') sel.value = '';
+      sel.addEventListener('change', onChange);
+      wrap.appendChild(sel);
+      inputs.set(f.key, sel);
+    } else {
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = cur;
+      inp.placeholder = f.default ?? '';
+      inp.addEventListener('input', onChange);
+      wrap.appendChild(inp);
+      inputs.set(f.key, inp);
+    }
+    host.appendChild(wrap);
+  }
+
+  return {
+    values(): Record<string, string> {
+      const out: Record<string, string> = {};
+      for (const [k, el] of inputs) {
+        const v = el.value.trim();
+        if (v) out[k] = v;
+      }
+      return out;
+    },
+    changed(): boolean {
+      for (const [k, el] of inputs) {
+        if ((el.value || '').trim() !== (initialSnap[k] || '')) return true;
+      }
+      return false;
+    },
+  };
+}
+
+function makeFieldRow(draft: FieldDef[], idx: number, markDirty: () => void): HTMLElement {
+  const f = draft[idx];
+  const row = document.createElement('div');
+  row.className = 'schema-row';
+
+  const keyIn = document.createElement('input');
+  keyIn.type = 'text'; keyIn.placeholder = 'key (e.g., clothing_color)';
+  keyIn.value = f.key;
+  keyIn.addEventListener('input', () => { f.key = keyIn.value; markDirty(); });
+
+  const labelIn = document.createElement('input');
+  labelIn.type = 'text'; labelIn.placeholder = 'Label (e.g., 옷색깔)';
+  labelIn.value = f.label;
+  labelIn.addEventListener('input', () => { f.label = labelIn.value; markDirty(); });
+
+  const typeSel = document.createElement('select');
+  for (const [v, l] of [['text', 'Text'], ['select', 'Select']] as const) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = l;
+    if (v === f.type) o.selected = true;
+    typeSel.appendChild(o);
+  }
+  typeSel.addEventListener('change', () => {
+    f.type = typeSel.value as FieldType;
+    if (f.type !== 'select') f.options = undefined;
+    else if (!f.options) f.options = [];
+    markDirty();
+    // 옵션 영역 업데이트
+    optsRow.style.display = f.type === 'select' ? '' : 'none';
+  });
+
+  const defaultIn = document.createElement('input');
+  defaultIn.type = 'text'; defaultIn.placeholder = 'default (optional)';
+  defaultIn.value = f.default ?? '';
+  defaultIn.addEventListener('input', () => { f.default = defaultIn.value || undefined; markDirty(); });
+
   const delBtn = document.createElement('button');
-  delBtn.className = 'del-btn'; delBtn.textContent = '×'; delBtn.title = 'Delete';
-  delBtn.addEventListener('click', async () => {
-    if (!confirm('Delete this character?')) return;
-    try {
-      await deleteAsset(token, it.url);
-      const metaUrl = it.url.replace(/\.png$/i, '.meta.json');
-      try { await deleteAsset(token, metaUrl); } catch { /* 무시 */ }
-      showToast('Deleted');
-      refreshList();
-    } catch (e) {
-      showToast((e as Error).message, 'err');
-    }
+  delBtn.className = 'del-btn'; delBtn.textContent = '×'; delBtn.title = 'Delete field';
+  delBtn.addEventListener('click', () => {
+    draft.splice(idx, 1);
+    row.dispatchEvent(new CustomEvent('field-removed', { bubbles: true }));
+    markDirty();
+    // 부모 컨테이너에 다시 그리기 요청 — 이벤트로 통신하기 번거로움. row.parentElement!.parentElement! 등.
+    // 간단히: 페이지 다시 그리기.
+    refreshList();
   });
 
-  row.appendChild(thumb);
-  row.appendChild(nameIn);
-  row.appendChild(bodySel);
-  row.appendChild(raceIn);
-  row.appendChild(saveBtn);
+  row.appendChild(keyIn);
+  row.appendChild(labelIn);
+  row.appendChild(typeSel);
+  row.appendChild(defaultIn);
   row.appendChild(delBtn);
+
+  // 옵션 영역 (select 일 때만)
+  const optsRow = document.createElement('div');
+  optsRow.className = 'schema-options';
+  optsRow.style.display = f.type === 'select' ? '' : 'none';
+  const optsLabel = document.createElement('span');
+  optsLabel.textContent = 'Options';
+  const optsIn = document.createElement('textarea');
+  optsIn.rows = 2;
+  optsIn.placeholder = 'red\nblue\ngreen';
+  optsIn.value = (f.options ?? []).join('\n');
+  optsIn.addEventListener('input', () => {
+    f.options = optsIn.value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    markDirty();
+  });
+  optsRow.appendChild(optsLabel);
+  optsRow.appendChild(optsIn);
+  row.appendChild(optsRow);
+
   return row;
 }
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+}
+
 
 function drawIdleFrame(canvas: HTMLCanvasElement, img: HTMLImageElement): void {
   const ctx = canvas.getContext('2d');
@@ -784,6 +953,8 @@ function ready(fn: () => void): void {
 ready(async () => {
   // 비번 받기
   token = await ensureAuth();
+  // 카테고리별 메타 스키마 로드 (있으면)
+  await loadAllSchemas(token);
 
   // 탭 — Settings 는 별도. asset 탭 클릭 시 inSettings 해제.
   document.querySelectorAll<HTMLButtonElement>('.lib-tab').forEach((btn) => {
