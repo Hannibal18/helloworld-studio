@@ -31,7 +31,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       body,
       onBeforeGenerateToken: async (pathname) => {
         const ext = pathname.split('.').pop()?.toLowerCase();
-        const allowed = ['json', 'tmj', 'tsj', 'png', 'jpg', 'jpeg', 'mp3', 'ogg', 'wav', 'm4a'];
+        const allowed = ['json', 'tmj', 'tsj', 'png', 'jpg', 'jpeg', 'mp3', 'ogg', 'wav', 'm4a', 'zip'];
         if (!ext || !allowed.includes(ext)) {
           throw new Error(`확장자 ${ext} 는 업로드 불가`);
         }
@@ -41,6 +41,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         return {
           allowedContentTypes: [
             'application/json', 'application/octet-stream', 'text/plain',
+            'application/zip', 'application/x-zip-compressed',
             'image/png', 'image/jpeg',
             'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/mp4', 'audio/x-m4a',
           ],

@@ -239,37 +239,44 @@ async function refreshList(): Promise<void> {
       }));
     }
 
-    // 캐릭터 메타 로드 — meta.json 의 pathname 으로 대표 파일 pathname 추정
-    if (activeCat === 'characters' && sidecars.length > 0) {
-      await Promise.all(sidecars.map(async (s) => {
-        try {
-          const r = await fetch(s.url, { cache: 'reload' });
-          if (!r.ok) return;
-          const j = await r.json() as {
-            actions?: LPCAction[]; body?: BodyType; name?: string; race?: string;
-            fields?: Record<string, string>;
-            format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
-            originalZipUrl?: string;
-          };
-          const charPath = s.pathname.endsWith('/meta.json')
-            ? s.pathname.replace(/\/meta\.json$/, '/thumbnail.png')
-            : s.pathname.replace(/\.meta\.json$/, '.png');
-          if (Array.isArray(j.actions)) {
-            charMetaByPath.set(charPath, {
-              actions: j.actions,
-              body: j.body,
-              name: j.name,
-              race: j.race,
-              fields: j.fields,
-              format: j.format ?? 'single',
-              anims: j.anims,
-              customAnims: j.customAnims,
-              originalZipUrl: j.originalZipUrl,
-              totalSize: folderTotalSize.get(charPath),
-            });
-          }
-        } catch { /* 무시 */ }
-      }));
+    // 캐릭터 메타 로드 — meta.json 의 pathname 으로 대표 파일 pathname 추정.
+    // 새 refresh 마다 캐릭터 메타 맵을 비워서 phantom(대표 파일 사라진 후 잔존하는 메타) 제거.
+    if (activeCat === 'characters') {
+      charMetaByPath.clear();
+      const itemPaths = new Set(items.map((it) => it.pathname));
+      if (sidecars.length > 0) {
+        await Promise.all(sidecars.map(async (s) => {
+          try {
+            const r = await fetch(s.url, { cache: 'reload' });
+            if (!r.ok) return;
+            const j = await r.json() as {
+              actions?: LPCAction[]; body?: BodyType; name?: string; race?: string;
+              fields?: Record<string, string>;
+              format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
+              originalZipUrl?: string;
+            };
+            const charPath = s.pathname.endsWith('/meta.json')
+              ? s.pathname.replace(/\/meta\.json$/, '/thumbnail.png')
+              : s.pathname.replace(/\.meta\.json$/, '.png');
+            // 대응하는 대표 파일이 실제로 존재하지 않으면 orphan 메타 — 무시
+            if (!itemPaths.has(charPath)) return;
+            if (Array.isArray(j.actions)) {
+              charMetaByPath.set(charPath, {
+                actions: j.actions,
+                body: j.body,
+                name: j.name,
+                race: j.race,
+                fields: j.fields,
+                format: j.format ?? 'single',
+                anims: j.anims,
+                customAnims: j.customAnims,
+                originalZipUrl: j.originalZipUrl,
+                totalSize: folderTotalSize.get(charPath),
+              });
+            }
+          } catch { /* 무시 */ }
+        }));
+      }
     }
 
     if (items.length === 0) {
@@ -430,11 +437,14 @@ function suggestUniqueName(base: string): string {
   }
   return `${base} ${Date.now()}`;
 }
-/** 업로드 모달 등에서 호출 — 현재 캐릭터 목록과 메타를 charMetaByPath 에 동기화. */
+/** 업로드 모달 등에서 호출 — 현재 캐릭터 목록과 메타를 charMetaByPath 에 동기화.
+ *  refreshList 와 동일한 orphan 필터링 적용. */
 async function ensureCharactersLoaded(): Promise<void> {
   try {
     const all = await listAssets(token, 'characters');
+    const entryPaths = new Set(all.filter((it) => isCharacterEntryPath(it.pathname)).map((it) => it.pathname));
     const sidecars = all.filter((it) => it.pathname.endsWith('.meta.json') || it.pathname.endsWith('/meta.json'));
+    charMetaByPath.clear();
     await Promise.all(sidecars.map(async (s) => {
       try {
         const r = await fetch(s.url, { cache: 'reload' });
@@ -443,15 +453,18 @@ async function ensureCharactersLoaded(): Promise<void> {
           actions?: LPCAction[]; body?: BodyType; name?: string; race?: string;
           fields?: Record<string, string>;
           format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
+          originalZipUrl?: string;
         };
         const charPath = s.pathname.endsWith('/meta.json')
           ? s.pathname.replace(/\/meta\.json$/, '/thumbnail.png')
           : s.pathname.replace(/\.meta\.json$/, '.png');
+        if (!entryPaths.has(charPath)) return;
         if (Array.isArray(j.actions)) {
           charMetaByPath.set(charPath, {
             actions: j.actions, body: j.body, name: j.name, race: j.race,
             fields: j.fields, format: j.format ?? 'single',
             anims: j.anims, customAnims: j.customAnims,
+            originalZipUrl: j.originalZipUrl,
           });
         }
       } catch { /* 무시 */ }
@@ -661,26 +674,47 @@ function renderDetail(it: BlobItem | null): void {
     saveBtn.textContent = 'Saving…';
     try {
       const newFields = customFieldsHost.values();
-      const newMeta: CharMeta = {
-        actions: meta?.actions ?? [],
+      const isZip = meta?.format === 'zip' || it.pathname.endsWith('/thumbnail.png');
+      const baseName = charBaseName(it.pathname);
+
+      // 기존 메타를 fetch 해서 우리가 모르는 필드(LPC character state 등)도 보존
+      const existingMetaUrl = isZip
+        ? it.url.replace(/\/thumbnail\.png$/, '/meta.json')
+        : it.url.replace(/\.png$/i, '.meta.json');
+      let existing: Record<string, unknown> = {};
+      try {
+        const r = await fetch(existingMetaUrl, { cache: 'reload' });
+        if (r.ok) existing = await r.json() as Record<string, unknown>;
+      } catch { /* 없으면 무시 */ }
+
+      const merged = {
+        ...existing,
+        schema: 1,
+        source: isZip ? 'lpc-zip' : 'lpc',
+        format: isZip ? 'zip' : 'single',
         body: bodySel.value as BodyType,
         name: nameInput.value.trim(),
         race: raceInput.value.trim() || undefined,
-        fields: newFields,
-      };
-      const metaName = `${charBaseName(it.pathname)}.meta.json`;
-      const metaBody = JSON.stringify({
-        schema: 1,
-        source: 'lpc',
-        body: newMeta.body,
-        name: newMeta.name,
-        race: newMeta.race,
-        actions: newMeta.actions,
+        actions: meta?.actions ?? (existing.actions as LPCAction[] | undefined) ?? [],
         fields: newFields,
         savedAt: new Date().toISOString(),
-      }, null, 2);
-      const metaFile = new File([metaBody], metaName, { type: 'application/json' });
+      };
+      const metaName = isZip ? `${baseName}/meta.json` : `${baseName}.meta.json`;
+      const metaFile = new File([JSON.stringify(merged, null, 2)], metaName, { type: 'application/json' });
       await uploadAsset(token, 'characters', metaFile);
+
+      const newMeta: CharMeta = {
+        actions: merged.actions as LPCAction[],
+        body: merged.body,
+        name: merged.name,
+        race: merged.race,
+        fields: newFields,
+        format: meta?.format,
+        anims: meta?.anims,
+        customAnims: meta?.customAnims,
+        originalZipUrl: meta?.originalZipUrl,
+        totalSize: meta?.totalSize,
+      };
       charMetaByPath.set(it.pathname, newMeta);
       showToast('Saved');
       saveBtn.textContent = 'Save';
