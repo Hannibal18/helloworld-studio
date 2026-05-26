@@ -32,8 +32,8 @@ import {
 
 type Category = 'maps' | 'characters' | 'bgm';
 const EXT_BY_CAT: Record<Category, string[]> = {
-  maps:       ['json', 'tmj', 'tsj', 'png', 'jpg', 'jpeg'],
-  characters: ['png', 'zip'],   // ZIP = LPC Split-by-Animation 패키지
+  maps:       ['json', 'tmj', 'tsj', 'png', 'jpg', 'jpeg', 'zip'],  // zip = Tiled 맵 묶음
+  characters: ['png', 'zip'],   // zip = LPC Split-by-Animation 패키지
   bgm:        ['mp3', 'ogg', 'wav', 'm4a'],
 };
 
