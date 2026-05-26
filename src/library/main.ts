@@ -229,6 +229,19 @@ function isCharNameTaken(name: string, exceptPath?: string): boolean {
   }
   return false;
 }
+/** base 와 겹치지 않는 다음 이름 제안. 'Knight' → 'Knight 2', 'Knight 2' → 'Knight 3'. */
+function suggestUniqueName(base: string): string {
+  if (!isCharNameTaken(base)) return base;
+  const m = base.match(/^(.*?)\s*(\d+)$/);
+  const stem = m ? m[1].trim() : base;
+  let n = m ? parseInt(m[2], 10) + 1 : 2;
+  while (n < 10000) {
+    const candidate = `${stem} ${n}`;
+    if (!isCharNameTaken(candidate)) return candidate;
+    n++;
+  }
+  return `${base} ${Date.now()}`;
+}
 /** 업로드 모달 등에서 호출 — 현재 캐릭터 목록과 메타를 charMetaByPath 에 동기화. */
 async function ensureCharactersLoaded(): Promise<void> {
   try {
@@ -904,8 +917,8 @@ async function uploadOne(file: File, displayName: string, opts?: {
 
 /** 캐릭터 업로드 모달 흐름. detect → preview + name input → user confirms → uploadOne. */
 async function uploadCharacterWithModal(file: File): Promise<void> {
-  // 이름 중복 검사용으로 현재 캐릭터 목록 최신화
-  await ensureCharactersLoaded();
+  // 캐릭터 목록 백그라운드로 최신화 (모달은 즉시 열림 — 로드 끝나면 이름 검증/제안 갱신)
+  const charsLoadedP = ensureCharactersLoaded();
 
   const modal = document.getElementById('char-upload-modal')!;
   const previewC = document.getElementById('cu-preview') as HTMLCanvasElement;
@@ -985,6 +998,15 @@ async function uploadCharacterWithModal(file: File): Promise<void> {
   };
   nameInput.addEventListener('input', validate);
   validate();
+
+  // 백그라운드 로드가 끝나면, 기본 이름이 충돌이면 자동으로 안 겹치는 이름 제안
+  void charsLoadedP.then(() => {
+    if (nameInput.value === baseFromFile && isCharNameTaken(baseFromFile)) {
+      nameInput.value = suggestUniqueName(baseFromFile);
+      nameInput.select();
+    }
+    validate();
+  });
 
   // 사용자 응답 대기
   await new Promise<void>((resolve) => {
