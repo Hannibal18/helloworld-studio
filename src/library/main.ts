@@ -39,7 +39,8 @@ interface CharMeta {
   // ZIP 업로드 전용: 표준/커스텀 액션 PNG 들. 키 = 액션 이름, 값 = 그 PNG 의 Blob URL.
   format?: 'single' | 'zip';
   anims?: Record<string, string>;
-  customAnims?: string[];          // backslash_128 등 — anims 안의 키 부분집합
+  customAnims?: string[];
+  totalSize?: number;              // ZIP 의 모든 파일 합산 크기 (표시용)
 }
 
 // pathname → 캐릭터 메타 (액션, 성별 등). sidecar .meta.json 에서 채움.
@@ -154,12 +155,22 @@ async function refreshList(): Promise<void> {
     // 카테고리별 분류
     let items: BlobItem[] = [];
     let sidecars: BlobItem[] = [];
+    // 캐릭터 ZIP 폴더의 파일 크기 합산 (대표 파일 pathname → 폴더 내 합산 바이트)
+    const folderTotalSize = new Map<string, number>();
     if (activeCat === 'characters') {
       // 캐릭터: 대표 파일(legacy PNG or ZIP thumbnail) 만 items. 나머지 anims/* 등은 숨김.
       for (const it of all) {
         if (isCharacterEntryPath(it.pathname)) items.push(it);
         else if (it.pathname.endsWith('.meta.json') || it.pathname.endsWith('/meta.json')) sidecars.push(it);
-        // 그 외(anims/*, custom 등)는 무시 — 내부 파일
+        // 그 외(anims/*, custom 등)는 폴더 합산에만 반영
+      }
+      // ZIP 폴더 안 모든 파일 크기 합산
+      for (const it of all) {
+        const m = /^characters\/([^/]+)\//.exec(it.pathname);
+        if (m) {
+          const thumbPath = `characters/${m[1]}/thumbnail.png`;
+          folderTotalSize.set(thumbPath, (folderTotalSize.get(thumbPath) ?? 0) + it.size);
+        }
       }
     } else {
       for (const it of all) {
@@ -195,6 +206,7 @@ async function refreshList(): Promise<void> {
               format: j.format ?? 'single',
               anims: j.anims,
               customAnims: j.customAnims,
+              totalSize: folderTotalSize.get(charPath),
             });
           }
         } catch { /* 무시 */ }
@@ -451,7 +463,8 @@ function renderDetail(it: BlobItem | null): void {
   nameInput.value = initialName;
   bodySel.value = initialBody;
   raceInput.value = initialRace;
-  subEl.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
+  const displaySize = meta?.totalSize ?? it.size;
+  subEl.textContent = `${fmtSize(displaySize)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   saveBtn.disabled = true;
 
   // 커스텀 스키마 필드 폼 렌더
