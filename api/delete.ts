@@ -5,7 +5,7 @@
 import { del } from '@vercel/blob';
 import { checkAuth, unauthorized, badRequest } from './_auth.js';
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'edge' };
 
 export default async function handler(request: Request): Promise<Response> {
   if (request.method !== 'DELETE' && request.method !== 'POST') {

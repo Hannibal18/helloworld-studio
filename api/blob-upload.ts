@@ -5,7 +5,7 @@
 import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
 import { checkAuth, unauthorized, badRequest } from './_auth.js';
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'edge' };
 
 export default async function handler(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
