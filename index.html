@@ -53,6 +53,29 @@
       </div>
     </div>
 
+    <!-- 캐릭터 업로드 확인 모달 — 미리보기 + 이름 입력 후 업로드 -->
+    <div id="char-upload-modal" class="auth-modal hidden">
+      <div class="auth-box cu-box">
+        <h2>Upload character</h2>
+        <p id="cu-filename" class="cu-filename"></p>
+        <div class="cu-preview-row">
+          <canvas id="cu-preview" width="192" height="192" class="cu-preview"></canvas>
+          <div class="cu-info">
+            <label class="cu-name-label">Name
+              <input id="cu-name" type="text" placeholder="character" autocomplete="off" />
+            </label>
+            <div class="cu-actions-label">Detected actions</div>
+            <div id="cu-actions" class="lib-tags"></div>
+            <p id="cu-warn" class="auth-error hidden"></p>
+          </div>
+        </div>
+        <div class="auth-actions">
+          <button id="cu-cancel" class="st-btn" type="button">Cancel</button>
+          <button id="cu-submit" class="st-btn st-btn-primary" type="button">Upload</button>
+        </div>
+      </div>
+    </div>
+
     <div id="toast" class="st-toast hidden"></div>
     <script type="module" src="/src/library/main.ts"></script>
   </body>

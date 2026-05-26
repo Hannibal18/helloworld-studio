@@ -7,7 +7,10 @@
 
 import { ensureAuth, clearToken } from './auth';
 import { listAssets, uploadAsset, deleteAsset, AuthError, type BlobItem } from './api';
-import { detectActionsFromFile, ANIMATION_CONFIGS, type LPCAction } from './lpc-detect';
+import {
+  detectActionsFromFile, ANIMATION_CONFIGS, FRAME_SIZE,
+  type LPCAction,
+} from './lpc-detect';
 
 type Category = 'maps' | 'characters' | 'bgm';
 const EXT_BY_CAT: Record<Category, string[]> = {
@@ -21,6 +24,8 @@ let activeCat: Category = 'maps';
 
 // pathname → 검출된 액션 목록. sidecar 메타에서 채우고 리스트 렌더 시 참조.
 const actionsByPath = new Map<string, LPCAction[]>();
+// URL → 이미 로드된 LPC 시트 (썸네일 렌더용). 시트가 큰 편이라 캐싱 필수.
+const sheetByUrl = new Map<string, HTMLImageElement | 'loading' | 'error'>();
 
 function showToast(msg: string, kind: 'ok' | 'err' = 'ok', ms = 2200): void {
   const el = document.getElementById('toast');
@@ -45,6 +50,36 @@ function shortName(pathname: string): string {
 function extLabel(pathname: string): string {
   const ext = pathname.split('.').pop()?.toLowerCase() ?? '';
   return ext.toUpperCase();
+}
+
+/** LPC idle 프레임을 작은 캔버스로 그림 — walk row 10 (down), col 0 = 64×64 영역. */
+function drawCharacterThumb(canvas: HTMLCanvasElement, img: HTMLImageElement): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const w = canvas.width, h = canvas.height;
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, w, h);
+  // 시트의 walk-down idle (row 10, col 0). 시트가 비표준이면 빈 표시.
+  if (img.naturalWidth >= 64 && img.naturalHeight >= 11 * 64) {
+    ctx.drawImage(img, 0, 10 * FRAME_SIZE, FRAME_SIZE, FRAME_SIZE, 0, 0, w, h);
+  } else {
+    // 표준 아니면 시트 좌상단 일부만 보여줌
+    ctx.drawImage(img, 0, 0, Math.min(64, img.naturalWidth), Math.min(64, img.naturalHeight), 0, 0, w, h);
+  }
+}
+
+/** 비동기로 시트를 캐싱하고, 로드 끝나면 콜백. 캐시 적중이면 즉시 콜백. */
+function loadSheet(url: string, onReady: (img: HTMLImageElement) => void): void {
+  const cached = sheetByUrl.get(url);
+  if (cached === 'loading') return;
+  if (cached === 'error') return;
+  if (cached) { onReady(cached); return; }
+  sheetByUrl.set(url, 'loading');
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => { sheetByUrl.set(url, img); onReady(img); };
+  img.onerror = () => { sheetByUrl.set(url, 'error'); };
+  img.src = url;
 }
 
 function emptyLabel(cat: Category): string {
@@ -100,8 +135,24 @@ async function refreshList(): Promise<void> {
 function makeItem(it: BlobItem): HTMLElement {
   const li = document.createElement('li');
   li.className = 'lib-item';
-  const ico = document.createElement('div');
-  ico.className = 'ext'; ico.textContent = extLabel(it.pathname);
+
+  // 좌측: 캐릭터면 썸네일 캔버스, 아니면 확장자 라벨
+  let leftEl: HTMLElement;
+  if (activeCat === 'characters' && it.pathname.toLowerCase().endsWith('.png')) {
+    const thumb = document.createElement('div');
+    thumb.className = 'thumb';
+    const c = document.createElement('canvas');
+    c.width = 48; c.height = 48;
+    thumb.appendChild(c);
+    leftEl = thumb;
+    // 비동기로 시트 로드 후 썸네일 렌더
+    loadSheet(it.url, (img) => drawCharacterThumb(c, img));
+  } else {
+    leftEl = document.createElement('div');
+    leftEl.className = 'ext';
+    leftEl.textContent = extLabel(it.pathname);
+  }
+
   const meta = document.createElement('div');
   meta.className = 'meta';
   const nm = document.createElement('div');
@@ -149,7 +200,7 @@ function makeItem(it: BlobItem): HTMLElement {
       showToast((e as Error).message, 'err');
     }
   });
-  li.appendChild(ico);
+  li.appendChild(leftEl);
   li.appendChild(meta);
   li.appendChild(del);
   return li;
@@ -157,66 +208,151 @@ function makeItem(it: BlobItem): HTMLElement {
 
 async function handleFiles(files: FileList | File[]): Promise<void> {
   const arr = Array.from(files);
-  const progressEl = document.getElementById('upload-progress')!;
   for (const f of arr) {
     const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
     if (!EXT_BY_CAT[activeCat].includes(ext)) {
       showToast(`${f.name} — extension .${ext} not allowed in this tab`, 'err', 3000);
       continue;
     }
-    const row = document.createElement('div');
-    row.className = 'lib-progress-row';
-    row.innerHTML = `<span class="name">${f.name}</span><span class="bar"><div style="width:0%"></div></span><span class="pct">0%</span>`;
-    progressEl.appendChild(row);
-    const bar = row.querySelector('.bar > div') as HTMLDivElement;
-    const pct = row.querySelector('.pct') as HTMLSpanElement;
-    const nameEl = row.querySelector('.name')!;
-
-    try {
-      // 캐릭터면 업로드 전에 LPC 액션 검출
-      let detectedActions: LPCAction[] | null = null;
-      if (activeCat === 'characters') {
-        nameEl.textContent = `${f.name} — analyzing…`;
-        const det = await detectActionsFromFile(f);
-        if (!det.standard) {
-          throw new Error(`Not a standard 832×3456 LPC sheet (got ${det.width}×${det.height})`);
-        }
-        detectedActions = det.actions;
-        nameEl.textContent = `${f.name} · ${detectedActions.length} actions detected`;
-      }
-
-      // PNG (또는 일반 파일) 업로드
-      await uploadAsset(token, activeCat, f, (loaded, total) => {
-        const p = total > 0 ? Math.round((loaded / total) * 100) : 0;
-        bar.style.width = p + '%';
-        pct.textContent = p + '%';
-      });
-
-      // 캐릭터면 sidecar JSON 도 업로드
-      if (activeCat === 'characters' && detectedActions) {
-        const metaName = f.name.replace(/\.[^.]+$/, '') + '.meta.json';
-        const metaBody = JSON.stringify({
-          schema: 1,
-          source: 'lpc',
-          actions: detectedActions,
-          detectedAt: new Date().toISOString(),
-        }, null, 2);
-        const metaFile = new File([metaBody], metaName, { type: 'application/json' });
-        await uploadAsset(token, activeCat, metaFile);
-      }
-
-      row.classList.add('ok');
-      pct.textContent = 'OK';
-    } catch (e) {
-      row.classList.add('err');
-      pct.textContent = 'ERR';
-      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
-      nameEl.textContent = `${f.name} — ${msg}`;
-      if (e instanceof AuthError) { clearToken(); }
+    if (activeCat === 'characters') {
+      // 모달로 미리보기 + 이름 확정 → 사용자가 Upload 누르면 업로드
+      await uploadCharacterWithModal(f);
+    } else {
+      // Maps / Audio 는 기존 흐름 — 즉시 업로드
+      await uploadOne(f, f.name);
     }
-    setTimeout(() => row.remove(), 5000);
   }
   refreshList();
+}
+
+/** Maps/Audio 또는 캐릭터(확정된 이름) 한 파일 업로드 + 진행률 표시. */
+async function uploadOne(file: File, displayName: string, opts?: {
+  characterActions?: LPCAction[];
+  characterBaseName?: string;     // 'name' (확장자 없음)
+}): Promise<void> {
+  const progressEl = document.getElementById('upload-progress')!;
+  const row = document.createElement('div');
+  row.className = 'lib-progress-row';
+  row.innerHTML = `<span class="name"></span><span class="bar"><div style="width:0%"></div></span><span class="pct">0%</span>`;
+  progressEl.appendChild(row);
+  const bar = row.querySelector('.bar > div') as HTMLDivElement;
+  const pct = row.querySelector('.pct') as HTMLSpanElement;
+  const nameEl = row.querySelector('.name')!;
+  nameEl.textContent = displayName;
+
+  try {
+    await uploadAsset(token, activeCat, file, (loaded, total) => {
+      const p = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      bar.style.width = p + '%';
+      pct.textContent = p + '%';
+    });
+    if (opts?.characterActions && opts.characterBaseName) {
+      const metaName = `${opts.characterBaseName}.meta.json`;
+      const metaBody = JSON.stringify({
+        schema: 1,
+        source: 'lpc',
+        actions: opts.characterActions,
+        detectedAt: new Date().toISOString(),
+      }, null, 2);
+      const metaFile = new File([metaBody], metaName, { type: 'application/json' });
+      await uploadAsset(token, activeCat, metaFile);
+    }
+    row.classList.add('ok');
+    pct.textContent = 'OK';
+  } catch (e) {
+    row.classList.add('err');
+    pct.textContent = 'ERR';
+    const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+    nameEl.textContent = `${displayName} — ${msg}`;
+    if (e instanceof AuthError) { clearToken(); }
+  }
+  setTimeout(() => row.remove(), 5000);
+}
+
+/** 캐릭터 업로드 모달 흐름. detect → preview + name input → user confirms → uploadOne. */
+async function uploadCharacterWithModal(file: File): Promise<void> {
+  const modal = document.getElementById('char-upload-modal')!;
+  const previewC = document.getElementById('cu-preview') as HTMLCanvasElement;
+  const nameInput = document.getElementById('cu-name') as HTMLInputElement;
+  const actionsEl = document.getElementById('cu-actions')!;
+  const warnEl = document.getElementById('cu-warn')!;
+  const fnameEl = document.getElementById('cu-filename')!;
+  const submitBtn = document.getElementById('cu-submit') as HTMLButtonElement;
+  const cancelBtn = document.getElementById('cu-cancel') as HTMLButtonElement;
+
+  // 기본값
+  const baseFromFile = file.name.replace(/\.[^.]+$/, '');
+  nameInput.value = baseFromFile;
+  fnameEl.textContent = file.name;
+  warnEl.classList.add('hidden');
+  actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">analyzing…</span>';
+  // 미리보기 즉시 (URL.createObjectURL)
+  const previewUrl = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => drawCharacterThumb(previewC, img);
+  img.src = previewUrl;
+
+  modal.classList.remove('hidden');
+  submitBtn.disabled = true;
+  nameInput.focus();
+  nameInput.select();
+
+  // 액션 검출 (백그라운드)
+  let actions: LPCAction[] = [];
+  try {
+    const det = await detectActionsFromFile(file);
+    if (!det.standard) {
+      warnEl.textContent = `Not a standard 832×3456 LPC sheet (got ${det.width}×${det.height}). Upload disabled.`;
+      warnEl.classList.remove('hidden');
+      actionsEl.innerHTML = '';
+      submitBtn.disabled = true;
+    } else {
+      actions = det.actions;
+      actionsEl.innerHTML = '';
+      for (const a of actions) {
+        const tag = document.createElement('span');
+        tag.className = 'lib-tag';
+        tag.textContent = ANIMATION_CONFIGS[a]?.label ?? a;
+        actionsEl.appendChild(tag);
+      }
+      if (actions.length === 0) {
+        actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">no actions detected</span>';
+      }
+      submitBtn.disabled = false;
+    }
+  } catch (e) {
+    warnEl.textContent = (e as Error).message;
+    warnEl.classList.remove('hidden');
+  }
+
+  // 사용자 응답 대기
+  await new Promise<void>((resolve) => {
+    const cleanup = (): void => {
+      URL.revokeObjectURL(previewUrl);
+      modal.classList.add('hidden');
+      submitBtn.onclick = null;
+      cancelBtn.onclick = null;
+      nameInput.onkeydown = null;
+      resolve();
+    };
+    const doUpload = async (): Promise<void> => {
+      const raw = nameInput.value.trim();
+      if (!raw) { warnEl.textContent = 'Name required.'; warnEl.classList.remove('hidden'); return; }
+      const cleaned = raw.replace(/[\/\\]/g, '_').replace(/\.png$/i, '');
+      const newFile = new File([file], `${cleaned}.png`, { type: file.type });
+      cleanup();
+      await uploadOne(newFile, `${cleaned}.png`, {
+        characterActions: actions,
+        characterBaseName: cleaned,
+      });
+    };
+    submitBtn.onclick = () => { void doUpload(); };
+    cancelBtn.onclick = cleanup;
+    nameInput.onkeydown = (e) => {
+      if (e.key === 'Enter' && !submitBtn.disabled) { e.preventDefault(); void doUpload(); }
+      else if (e.key === 'Escape') { cleanup(); }
+    };
+  });
 }
 
 function ready(fn: () => void): void {
