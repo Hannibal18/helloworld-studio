@@ -11,6 +11,7 @@ import {
   detectActionsFromFile, ANIMATION_CONFIGS, FRAME_SIZE,
   type LPCAction,
 } from './lpc-detect';
+import { parseLpcZip, isLpcZipFile, type ParsedLpcZip } from './lpc-zip';
 import {
   schemasByCategory, loadAllSchemas, saveSchema,
   type FieldDef, type FieldType, type SchemaCat,
@@ -19,7 +20,7 @@ import {
 type Category = 'maps' | 'characters' | 'bgm';
 const EXT_BY_CAT: Record<Category, string[]> = {
   maps:       ['json', 'tmj', 'tsj', 'png', 'jpg', 'jpeg'],
-  characters: ['png'],
+  characters: ['png', 'zip'],   // ZIP = LPC Split-by-Animation 패키지
   bgm:        ['mp3', 'ogg', 'wav', 'm4a'],
 };
 
@@ -29,12 +30,16 @@ let inSettings = false;                // Settings 탭 활성 여부
 
 type BodyType = 'male' | 'female' | 'none';
 interface CharMeta {
-  actions: LPCAction[];
+  actions: LPCAction[];           // 표준 액션 목록 (PNG 단독은 검출, ZIP 은 파일명 기반)
   body?: BodyType;
-  name?: string;        // 표시용 이름 (파일명과 분리)
-  race?: string;        // 종족 — 자유 텍스트 (human, lizard, wolfman, ...)
-  fields?: Record<string, string>;  // 사용자 정의 스키마 필드값
+  name?: string;                   // 표시용 이름 (파일명과 분리)
+  race?: string;                   // 종족 자유 텍스트
+  fields?: Record<string, string>; // 사용자 정의 스키마 필드값
   uploadedAt?: string;
+  // ZIP 업로드 전용: 표준/커스텀 액션 PNG 들. 키 = 액션 이름, 값 = 그 PNG 의 Blob URL.
+  format?: 'single' | 'zip';
+  anims?: Record<string, string>;
+  customAnims?: string[];          // backslash_128 등 — anims 안의 키 부분집합
 }
 
 // pathname → 캐릭터 메타 (액션, 성별 등). sidecar .meta.json 에서 채움.
@@ -146,29 +151,50 @@ async function refreshList(): Promise<void> {
   try {
     const all = await listAssets(token, activeCat);
 
-    // sidecar .meta.json 분리
-    const items: BlobItem[] = [];
-    const sidecars: BlobItem[] = [];
-    for (const it of all) {
-      if (it.pathname.endsWith('.meta.json')) sidecars.push(it);
-      else items.push(it);
+    // 카테고리별 분류
+    let items: BlobItem[] = [];
+    let sidecars: BlobItem[] = [];
+    if (activeCat === 'characters') {
+      // 캐릭터: 대표 파일(legacy PNG or ZIP thumbnail) 만 items. 나머지 anims/* 등은 숨김.
+      for (const it of all) {
+        if (isCharacterEntryPath(it.pathname)) items.push(it);
+        else if (it.pathname.endsWith('.meta.json') || it.pathname.endsWith('/meta.json')) sidecars.push(it);
+        // 그 외(anims/*, custom 등)는 무시 — 내부 파일
+      }
+    } else {
+      for (const it of all) {
+        if (it.pathname.endsWith('.meta.json')) sidecars.push(it);
+        else items.push(it);
+      }
     }
 
-    // 캐릭터 카테고리면 sidecar JSON 을 병렬로 읽어 charMetaByPath 채움
+    // 캐릭터 메타 로드 — meta.json 의 pathname 으로 대표 파일 pathname 추정
     if (activeCat === 'characters' && sidecars.length > 0) {
       await Promise.all(sidecars.map(async (s) => {
         try {
           const r = await fetch(s.url, { cache: 'reload' });
           if (!r.ok) return;
-          const j = await r.json() as { actions?: LPCAction[]; body?: BodyType; name?: string; race?: string; fields?: Record<string, string> };
-          const pngPath = s.pathname.replace(/\.meta\.json$/, '.png');
+          const j = await r.json() as {
+            actions?: LPCAction[]; body?: BodyType; name?: string; race?: string;
+            fields?: Record<string, string>;
+            format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
+          };
+          // 대표 파일 pathname 역산:
+          //   characters/Foo.meta.json → characters/Foo.png  (legacy)
+          //   characters/Foo/meta.json → characters/Foo/thumbnail.png  (ZIP)
+          const charPath = s.pathname.endsWith('/meta.json')
+            ? s.pathname.replace(/\/meta\.json$/, '/thumbnail.png')
+            : s.pathname.replace(/\.meta\.json$/, '.png');
           if (Array.isArray(j.actions)) {
-            charMetaByPath.set(pngPath, {
+            charMetaByPath.set(charPath, {
               actions: j.actions,
               body: j.body,
               name: j.name,
               race: j.race,
               fields: j.fields,
+              format: j.format ?? 'single',
+              anims: j.anims,
+              customAnims: j.customAnims,
             });
           }
         } catch { /* 무시 */ }
@@ -201,6 +227,25 @@ async function refreshList(): Promise<void> {
   }
 }
 
+/** 캐릭터 삭제 — single 은 PNG+meta, ZIP 은 폴더 안 모든 파일(thumbnail/anims/meta). */
+async function deleteCharacter(it: BlobItem): Promise<void> {
+  const isZip = it.pathname.endsWith('/thumbnail.png');
+  if (!isZip) {
+    // legacy: PNG + sidecar meta.json
+    await deleteAsset(token, it.url);
+    const metaUrl = it.url.replace(/\.png$/i, '.meta.json');
+    try { await deleteAsset(token, metaUrl); } catch { /* 무시 */ }
+    return;
+  }
+  // ZIP: 폴더의 모든 파일 나열 후 삭제
+  const folderPrefix = it.pathname.slice(0, it.pathname.lastIndexOf('/') + 1); // 'characters/Foo/'
+  const all = await listAssets(token, 'characters');
+  const toDelete = all.filter((b) => b.pathname.startsWith(folderPrefix));
+  for (const b of toDelete) {
+    try { await deleteAsset(token, b.url); } catch { /* 일부 실패 무시 */ }
+  }
+}
+
 function bodyLabel(body: BodyType | undefined): string {
   if (body === 'male') return 'Male';
   if (body === 'female') return 'Female';
@@ -209,7 +254,21 @@ function bodyLabel(body: BodyType | undefined): string {
 }
 function charBaseName(pathname: string): string {
   // characters/foo.png → foo
+  // characters/Foo/thumbnail.png → Foo  (ZIP 포맷)
+  if (pathname.endsWith('/thumbnail.png')) {
+    const after = pathname.slice('characters/'.length);
+    return after.slice(0, after.length - '/thumbnail.png'.length);
+  }
   return shortName(pathname).replace(/\.[^.]+$/, '');
+}
+/** pathname 이 캐릭터 '대표 파일' 인지 (리스트에 등장하는 파일). 내부 anims/* 는 false. */
+function isCharacterEntryPath(pathname: string): boolean {
+  if (!pathname.startsWith('characters/') || pathname.endsWith('.meta.json')) return false;
+  const tail = pathname.slice('characters/'.length);
+  // 'foo.png' (no slash) → legacy 대표 PNG
+  if (!tail.includes('/')) return tail.toLowerCase().endsWith('.png');
+  // 'Foo/thumbnail.png' → ZIP 대표 썸네일
+  return tail.endsWith('/thumbnail.png');
 }
 function displayName(it: BlobItem): string {
   return charMetaByPath.get(it.pathname)?.name || charBaseName(it.pathname);
@@ -246,15 +305,25 @@ function suggestUniqueName(base: string): string {
 async function ensureCharactersLoaded(): Promise<void> {
   try {
     const all = await listAssets(token, 'characters');
-    const sidecars = all.filter((it) => it.pathname.endsWith('.meta.json'));
+    const sidecars = all.filter((it) => it.pathname.endsWith('.meta.json') || it.pathname.endsWith('/meta.json'));
     await Promise.all(sidecars.map(async (s) => {
       try {
         const r = await fetch(s.url, { cache: 'reload' });
         if (!r.ok) return;
-        const j = await r.json() as { actions?: LPCAction[]; body?: BodyType; name?: string; race?: string; fields?: Record<string, string> };
-        const pngPath = s.pathname.replace(/\.meta\.json$/, '.png');
+        const j = await r.json() as {
+          actions?: LPCAction[]; body?: BodyType; name?: string; race?: string;
+          fields?: Record<string, string>;
+          format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
+        };
+        const charPath = s.pathname.endsWith('/meta.json')
+          ? s.pathname.replace(/\/meta\.json$/, '/thumbnail.png')
+          : s.pathname.replace(/\.meta\.json$/, '.png');
         if (Array.isArray(j.actions)) {
-          charMetaByPath.set(pngPath, { actions: j.actions, body: j.body, name: j.name, race: j.race, fields: j.fields });
+          charMetaByPath.set(charPath, {
+            actions: j.actions, body: j.body, name: j.name, race: j.race,
+            fields: j.fields, format: j.format ?? 'single',
+            anims: j.anims, customAnims: j.customAnims,
+          });
         }
       } catch { /* 무시 */ }
     }));
@@ -322,11 +391,11 @@ function makeItem(it: BlobItem): HTMLElement {
     const confirmMsg = activeCat === 'characters' ? 'Delete this character?' : 'Delete this file?';
     if (!confirm(confirmMsg)) return;
     try {
-      await deleteAsset(token, it.url);
       if (activeCat === 'characters') {
-        const metaUrl = it.url.replace(/\.png$/i, '.meta.json');
-        try { await deleteAsset(token, metaUrl); } catch { /* 무시 */ }
+        await deleteCharacter(it);
         if (selectedChar?.pathname === it.pathname) selectedChar = null;
+      } else {
+        await deleteAsset(token, it.url);
       }
       showToast('Deleted');
       refreshList();
@@ -453,28 +522,29 @@ function renderDetail(it: BlobItem | null): void {
     }
   };
 
-  // 액션 버튼
+  // 액션 버튼 — ZIP 포맷이면 anims 키 전체 (custom 포함), single 이면 검출된 actions
   actionsEl.innerHTML = '';
-  const actions = meta?.actions ?? [];
-  if (actions.length === 0) {
-    actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">no actions detected</span>';
-    // 액션 없으면 정적 idle 프레임만 그림
-    loadSheet(it.url, (img) => drawIdleFrame(canvas, img));
+  const animKeys: string[] = meta?.format === 'zip' && meta.anims
+    ? Object.keys(meta.anims)
+    : (meta?.actions ?? []);
+  if (animKeys.length === 0) {
+    actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">no animations</span>';
+    if (meta?.format !== 'zip') loadSheet(it.url, (img) => drawIdleFrame(canvas, img));
     return;
   }
-  for (const a of actions) {
+  for (const a of animKeys) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.textContent = ANIMATION_CONFIGS[a]?.label ?? a;
+    btn.textContent = ANIMATION_CONFIGS[a as LPCAction]?.label ?? a;
     btn.dataset.action = a;
-    btn.addEventListener('click', () => playAction(a, it.url, canvas, actionsEl));
+    btn.addEventListener('click', () => playAction(a, it.url, canvas, actionsEl, meta));
     actionsEl.appendChild(btn);
   }
 
-  // 기본 재생: idle 액션이 있으면 그걸 자동 재생, 없으면 정적 idle 프레임
-  if (actions.includes('idle')) {
-    playAction('idle', it.url, canvas, actionsEl);
-  } else {
+  // 기본 재생: idle 액션이 있으면 자동, 없으면 정적 idle
+  if (animKeys.includes('idle')) {
+    playAction('idle', it.url, canvas, actionsEl, meta);
+  } else if (meta?.format !== 'zip') {
     loadSheet(it.url, (img) => drawIdleFrame(canvas, img));
   }
 }
@@ -809,27 +879,38 @@ function stopAnimation(): void {
   document.querySelectorAll('.lib-detail-actions button.playing').forEach((b) => b.classList.remove('playing'));
 }
 
-function playAction(action: LPCAction, url: string, canvas: HTMLCanvasElement, container: HTMLElement): void {
+// 액션 재생 — 단일 시트(single) 와 액션별 PNG(zip) 양쪽 지원.
+function playAction(
+  actionName: string,
+  sheetUrl: string,
+  canvas: HTMLCanvasElement,
+  container: HTMLElement,
+  meta?: CharMeta,
+): void {
   // 토글: 같은 액션 다시 클릭이면 정지
-  if (playingAction === action) { stopAnimation(); return; }
+  if (playingAction === actionName) { stopAnimation(); return; }
   stopAnimation();
-  playingAction = action;
+  playingAction = actionName;
   container.querySelectorAll('button').forEach((b) => {
-    b.classList.toggle('playing', b.dataset.action === action);
+    b.classList.toggle('playing', b.dataset.action === actionName);
   });
 
-  loadSheet(url, (img) => {
-    const cfg = ANIMATION_CONFIGS[action];
-    // 4-row 액션은 down(=+2) 방향. 1-row(hurt/climb) 은 그대로
-    const row = cfg.row + (cfg.num === 4 ? 2 : 0);
+  // ZIP 포맷이고 해당 anim 의 dedicated PNG 가 있으면 그걸 사용
+  if (meta?.format === 'zip' && meta.anims && meta.anims[actionName]) {
+    playFromAnimFile(actionName, meta.anims[actionName], canvas);
+    return;
+  }
+  // 단일 시트 — ANIMATION_CONFIGS row/cycle 로 슬라이스
+  const cfg = ANIMATION_CONFIGS[actionName as LPCAction];
+  if (!cfg) return;
+  loadSheet(sheetUrl, (img) => {
+    const row = cfg.row + (cfg.num === 4 ? 2 : 0); // down
     const cycle = cfg.cycle;
     const FPS = 8;
-    let frame = 0;
-    let lastT = 0;
+    let frame = 0; let lastT = 0;
     const ctx = canvas.getContext('2d')!;
-
     const loop = (now: number): void => {
-      if (playingAction !== action) return;
+      if (playingAction !== actionName) return;
       if (now - lastT > 1000 / FPS) {
         const col = cycle[frame];
         ctx.imageSmoothingEnabled = false;
@@ -837,6 +918,44 @@ function playAction(action: LPCAction, url: string, canvas: HTMLCanvasElement, c
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, col * FRAME_SIZE, row * FRAME_SIZE, FRAME_SIZE, FRAME_SIZE,
                       0, 0, canvas.width, canvas.height);
+        frame = (frame + 1) % cycle.length;
+        lastT = now;
+      }
+      playRafId = requestAnimationFrame(loop);
+    };
+    playRafId = requestAnimationFrame(loop);
+  });
+}
+
+/** ZIP 캐릭터의 액션별 PNG 에서 재생. 프레임 사이즈는 PNG 높이로 자동 추정 (4 방향 가정, hurt/climb 만 1 방향). */
+function playFromAnimFile(actionName: string, url: string, canvas: HTMLCanvasElement): void {
+  loadSheet(url, (img) => {
+    // 방향 수: hurt/climb 는 1 방향, 나머지는 4 방향. 명시 매핑 없으면 4 가정.
+    const oneRow = actionName === 'hurt' || actionName === 'climb';
+    const numRows = oneRow ? 1 : 4;
+    const frameSize = Math.round(img.naturalHeight / numRows);
+    const cols = Math.max(1, Math.round(img.naturalWidth / frameSize));
+    // 4-방향이면 row 2 (down). 1-방향이면 row 0.
+    const row = oneRow ? 0 : 2;
+    // 사이클: walk 의 경우 idle col 0 제외하고 [1..cols-1] 가 원래 cycle 인데
+    // ZIP 의 walk.png 는 LPC 가 cycle 만 추출했을 가능성도 있음.
+    // 단순화: 전체 col 0..cols-1 순환 — LPC 가 의도한 cycle 그대로.
+    const cycle: number[] = [];
+    for (let i = 0; i < cols; i++) cycle.push(i);
+    const FPS = 8;
+    let frame = 0; let lastT = 0;
+    const ctx = canvas.getContext('2d')!;
+    const loop = (now: number): void => {
+      if (playingAction !== actionName) return;
+      if (now - lastT > 1000 / FPS) {
+        const col = cycle[frame];
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = '#0e1014';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // 큰 무기는 frameSize=128 등이지만 캔버스에 맞춰 스케일링
+        ctx.drawImage(img,
+          col * frameSize, row * frameSize, frameSize, frameSize,
+          0, 0, canvas.width, canvas.height);
         frame = (frame + 1) % cycle.length;
         lastT = now;
       }
@@ -855,8 +974,13 @@ async function handleFiles(files: FileList | File[]): Promise<void> {
       continue;
     }
     if (activeCat === 'characters') {
-      // 모달로 미리보기 + 이름 확정 → 사용자가 Upload 누르면 업로드
-      await uploadCharacterWithModal(f);
+      if (isLpcZipFile(f)) {
+        // LPC Split-by-Animation ZIP — 풀어서 액션별 PNG 업로드
+        await uploadCharacterZipWithModal(f);
+      } else {
+        // 단일 PNG — 기존 흐름
+        await uploadCharacterWithModal(f);
+      }
     } else {
       // Maps / Audio 는 기존 흐름 — 즉시 업로드
       await uploadOne(f, f.name);
@@ -916,6 +1040,198 @@ async function uploadOne(file: File, displayName: string, opts?: {
 }
 
 /** 캐릭터 업로드 모달 흐름. detect → preview + name input → user confirms → uploadOne. */
+/** LPC Split-by-Animation ZIP 업로드 — 풀어서 액션별 PNG 들과 메타를 함께 올림. */
+async function uploadCharacterZipWithModal(zipFile: File): Promise<void> {
+  const charsLoadedP = ensureCharactersLoaded();
+
+  const modal = document.getElementById('char-upload-modal')!;
+  const previewC = document.getElementById('cu-preview') as HTMLCanvasElement;
+  const nameInput = document.getElementById('cu-name') as HTMLInputElement;
+  const bodySel = document.getElementById('cu-body') as HTMLSelectElement;
+  const raceInput = document.getElementById('cu-race') as HTMLInputElement;
+  const actionsEl = document.getElementById('cu-actions')!;
+  const warnEl = document.getElementById('cu-warn')!;
+  const fnameEl = document.getElementById('cu-filename')!;
+  const submitBtn = document.getElementById('cu-submit') as HTMLButtonElement;
+  const cancelBtn = document.getElementById('cu-cancel') as HTMLButtonElement;
+
+  const baseFromFile = zipFile.name.replace(/\.[^.]+$/, '');
+  nameInput.value = baseFromFile;
+  bodySel.value = 'male';
+  raceInput.value = '';
+  fnameEl.textContent = `${zipFile.name} (ZIP — Split by Animation)`;
+  warnEl.classList.add('hidden');
+  actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">parsing zip…</span>';
+
+  modal.classList.remove('hidden');
+  submitBtn.disabled = true;
+  nameInput.focus();
+  nameInput.select();
+
+  // ZIP 파싱
+  let parsed: ParsedLpcZip | null = null;
+  try {
+    parsed = await parseLpcZip(zipFile);
+  } catch (e) {
+    warnEl.textContent = `Invalid LPC ZIP: ${(e as Error).message}`;
+    warnEl.classList.remove('hidden');
+    actionsEl.innerHTML = '';
+  }
+
+  if (parsed) {
+    // 썸네일 미리보기
+    if (parsed.thumbnail) {
+      const img = new Image();
+      img.onload = () => {
+        const ctx = previewC.getContext('2d');
+        if (!ctx) return;
+        ctx.imageSmoothingEnabled = false;
+        ctx.clearRect(0, 0, previewC.width, previewC.height);
+        ctx.drawImage(img, 0, 0, previewC.width, previewC.height);
+      };
+      img.src = URL.createObjectURL(parsed.thumbnail);
+    }
+    // 액션 태그 — standard + custom
+    actionsEl.innerHTML = '';
+    const allActions = [...parsed.standardAnims, ...parsed.customAnims];
+    if (allActions.length === 0) {
+      actionsEl.innerHTML = '<span class="lib-tag lib-tag-muted">no animations found</span>';
+    } else {
+      for (const a of allActions) {
+        const tag = document.createElement('span');
+        tag.className = 'lib-tag';
+        tag.textContent = a;
+        actionsEl.appendChild(tag);
+      }
+    }
+  }
+
+  const validate = (): void => {
+    if (!parsed) { submitBtn.disabled = true; return; }
+    const raw = nameInput.value.trim();
+    if (!raw) {
+      warnEl.textContent = 'Name is required.';
+      warnEl.classList.remove('hidden');
+      submitBtn.disabled = true; return;
+    }
+    if (isCharNameTaken(raw)) {
+      warnEl.textContent = `A character named "${raw}" already exists.`;
+      warnEl.classList.remove('hidden');
+      submitBtn.disabled = true; return;
+    }
+    warnEl.classList.add('hidden');
+    submitBtn.disabled = false;
+  };
+  nameInput.addEventListener('input', validate);
+  validate();
+  void charsLoadedP.then(() => {
+    if (nameInput.value === baseFromFile && isCharNameTaken(baseFromFile)) {
+      nameInput.value = suggestUniqueName(baseFromFile);
+      nameInput.select();
+    }
+    validate();
+  });
+
+  await new Promise<void>((resolve) => {
+    const cleanup = (): void => {
+      modal.classList.add('hidden');
+      submitBtn.onclick = null;
+      cancelBtn.onclick = null;
+      nameInput.onkeydown = null;
+      nameInput.removeEventListener('input', validate);
+      resolve();
+    };
+    const doUpload = async (): Promise<void> => {
+      if (!parsed) return;
+      const raw = nameInput.value.trim();
+      if (!raw || isCharNameTaken(raw)) { validate(); return; }
+      const cleaned = raw.replace(/[\/\\]/g, '_');
+      cleanup();
+      await uploadZipCharacter(parsed, cleaned, raw, bodySel.value as BodyType, raceInput.value.trim());
+    };
+    submitBtn.onclick = () => { void doUpload(); };
+    cancelBtn.onclick = cleanup;
+    nameInput.onkeydown = (e) => {
+      if (e.key === 'Enter' && !submitBtn.disabled) { e.preventDefault(); void doUpload(); }
+      else if (e.key === 'Escape') { cleanup(); }
+    };
+  });
+}
+
+/** ZIP 캐릭터를 Blob 에 폴더 구조로 업로드. characters/<base>/{thumbnail.png, anims/*.png, meta.json}. */
+async function uploadZipCharacter(
+  parsed: ParsedLpcZip, baseName: string, displayName: string,
+  body: BodyType, race: string,
+): Promise<void> {
+  const progressEl = document.getElementById('upload-progress')!;
+  const row = document.createElement('div');
+  row.className = 'lib-progress-row';
+  row.innerHTML = `<span class="name">${displayName}</span><span class="bar"><div style="width:0%"></div></span><span class="pct">0%</span>`;
+  progressEl.appendChild(row);
+  const bar = row.querySelector('.bar > div') as HTMLDivElement;
+  const pct = row.querySelector('.pct') as HTMLSpanElement;
+  const nameEl = row.querySelector('.name')!;
+
+  // 폴더 prefix 로 업로드 — file.name 에 슬래시가 들어가면 Blob pathname 에 그대로 반영됨.
+  const animUrls: Record<string, string> = {};
+  const totalFiles = parsed.animFiles.size + (parsed.thumbnail ? 1 : 0) + 1; // anims + thumb + meta
+  let done = 0;
+  const tick = (): void => {
+    done++;
+    const p = Math.round((done / totalFiles) * 100);
+    bar.style.width = p + '%';
+    pct.textContent = p + '%';
+  };
+
+  try {
+    // 1) 썸네일
+    if (parsed.thumbnail) {
+      nameEl.textContent = `${displayName} — thumbnail`;
+      const thumbFile = new File([parsed.thumbnail], `${baseName}/thumbnail.png`, { type: 'image/png' });
+      await uploadAsset(token, 'characters', thumbFile);
+      tick();
+    }
+    // 2) 각 액션 PNG
+    for (const [anim, file] of parsed.animFiles) {
+      nameEl.textContent = `${displayName} — ${anim}`;
+      const out = new File([file], `${baseName}/anims/${anim}.png`, { type: 'image/png' });
+      const blob = await uploadAsset(token, 'characters', out);
+      animUrls[anim] = blob.url;
+      tick();
+    }
+    // 3) meta.json (마지막에 — anims URL 다 모은 다음)
+    nameEl.textContent = `${displayName} — metadata`;
+    const meta = {
+      schema: 1,
+      source: 'lpc-zip',
+      format: 'zip' as const,
+      name: displayName,
+      body,
+      race: race || undefined,
+      // 표준 액션 이름들을 우리 LPCAction 매핑에 맞게 변환 (e.g. 'backslash' → '1h_backslash')
+      actions: parsed.standardAnims.filter((a) => Object.prototype.hasOwnProperty.call(ANIMATION_CONFIGS, a)) as LPCAction[],
+      anims: animUrls,
+      customAnims: parsed.customAnims,
+      character: parsed.character ?? null,
+      detectedAt: new Date().toISOString(),
+    };
+    const metaFile = new File([JSON.stringify(meta, null, 2)], `${baseName}/meta.json`, { type: 'application/json' });
+    await uploadAsset(token, 'characters', metaFile);
+    tick();
+    row.classList.add('ok');
+    pct.textContent = 'OK';
+    nameEl.textContent = `${displayName} — done (${parsed.animFiles.size} animations)`;
+  } catch (e) {
+    row.classList.add('err');
+    pct.textContent = 'ERR';
+    const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+    nameEl.textContent = `${displayName} — ${msg}`;
+    if (e instanceof AuthError) { clearToken(); }
+  }
+  setTimeout(() => row.remove(), 5000);
+  refreshList();
+}
+
 async function uploadCharacterWithModal(file: File): Promise<void> {
   // 캐릭터 목록 백그라운드로 최신화 (모달은 즉시 열림 — 로드 끝나면 이름 검증/제안 갱신)
   const charsLoadedP = ensureCharactersLoaded();
