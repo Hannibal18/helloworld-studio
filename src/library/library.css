@@ -81,11 +81,127 @@
   width: 32px; text-align: right;
 }
 
+/* Master-detail 컨테이너 — Characters 탭에선 우측에 detail 패널 표시 */
+.lib-content {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  align-items: start;
+}
+.lib-content.has-detail {
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+@media (max-width: 760px) {
+  .lib-content.has-detail { grid-template-columns: 1fr; }
+}
+
 .lib-list {
   list-style: none; padding: 0; margin: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 6px;
+  min-width: 0;
+}
+/* Characters 탭에선 list 를 표 형식(단일 컬럼) 으로 */
+.lib-content.has-detail .lib-list {
+  grid-template-columns: 1fr;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.lib-content.has-detail .lib-item {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.lib-content.has-detail .lib-item:last-child { border-bottom: 0; }
+.lib-content.has-detail .lib-item:hover { background: var(--surface-2); }
+.lib-content.has-detail .lib-item.selected { background: var(--accent-bg); }
+.lib-content.has-detail .lib-item .meta { display: flex; align-items: center; gap: 12px; }
+.lib-content.has-detail .lib-item .name { flex: 1; }
+.lib-content.has-detail .lib-item .body {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  width: 64px; text-align: center;
+}
+.lib-content.has-detail .lib-item .date {
+  font-size: var(--fs-xs);
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  width: 84px; text-align: right;
+}
+.lib-content.has-detail .lib-item .sub,
+.lib-content.has-detail .lib-item .lib-tags {
+  display: none;  /* 표 형식에선 부가 정보 숨김 (detail 패널이 대신) */
+}
+
+/* Detail 패널 (우측) */
+.lib-detail {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: sticky;
+  top: 14px;
+}
+.lib-detail-preview {
+  width: 100%; height: auto;
+  aspect-ratio: 1 / 1;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  image-rendering: pixelated;
+}
+.lib-detail-info h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+.lib-detail-sub {
+  margin: 4px 0 0;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--text-mute);
+}
+.lib-detail-actions-title {
+  margin-top: 12px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+.lib-detail-actions {
+  display: flex; flex-wrap: wrap; gap: 4px;
+}
+.lib-detail-actions button {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.lib-detail-actions button:hover {
+  color: var(--text);
+  border-color: var(--border-2);
+}
+.lib-detail-actions button.playing {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 .lib-empty {
   grid-column: 1 / -1;
