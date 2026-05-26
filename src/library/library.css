@@ -633,6 +633,18 @@ html, body {
   font-weight: 600;
   min-width: 22px;
 }
+/* 리스트 row 의 자산 이름 옆 버전 라벨 (예: 'v3', 'v3*' = legacy 추정) */
+.lib-item-version {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-mute);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
 .lib-detail-history-row .h-ts { color: var(--text); overflow-wrap: anywhere; }
 .lib-detail-history-row .h-size { color: var(--text-mute); }
 .lib-detail-history-row a.st-btn,

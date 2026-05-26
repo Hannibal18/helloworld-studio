@@ -80,6 +80,9 @@ interface MapMeta {
   id?: string;
   /** 사용자에게 표시되는 자유 이름 — 자유롭게 변경 가능. */
   name?: string;
+  /** 현재 active 버전 번호 (1부터 시작). 새 버전 업로드 시 + 1 명시 저장.
+   *  옛 자산은 이 필드 없음 — 라이브러리에서 history 개수 + 1 fallback. */
+  version?: number;
   fields?: Record<string, string>;
   // ZIP 맵 전용 (legacy 단일 .json 맵은 'single' 또는 undefined).
   format?: 'single' | 'zip';
@@ -102,6 +105,20 @@ interface AudioMeta {
 }
 const mapMetaByPath = new Map<string, MapMeta>();
 const audioMetaByPath = new Map<string, AudioMeta>();
+/** 맵 entry pathname → _history/*.zip 개수. legacy 자산(meta.version 없음)의 version fallback 계산용. */
+const mapHistoryCountByPath = new Map<string, number>();
+
+/** 맵의 현재 버전 라벨. meta.version 직접 사용 — 없으면 history 개수 + 1 (legacy 표시). */
+function computeMapVersionLabel(meta: MapMeta | undefined, entryPathname: string): string {
+  if (meta?.version != null) return `v${meta.version}`;
+  const historyCount = mapHistoryCountByPath.get(entryPathname) ?? 0;
+  return `v${historyCount + 1} (legacy)`;
+}
+function computeMapVersionShort(meta: MapMeta | undefined, entryPathname: string): string {
+  if (meta?.version != null) return `v${meta.version}`;
+  const historyCount = mapHistoryCountByPath.get(entryPathname) ?? 0;
+  return `v${historyCount + 1}*`;  // * = legacy estimate
+}
 
 // URL → 이미 로드된 LPC 시트 (썸네일 + 미리보기 렌더용). 시트가 큰 편이라 캐싱 필수.
 const sheetByUrl = new Map<string, HTMLImageElement | 'loading' | 'error'>();
@@ -328,6 +345,7 @@ async function refreshList(): Promise<void> {
       }
     } else if (activeCat === 'maps') {
       // 맵: 대표(legacy .json 또는 ZIP /main.json) 만 items. 사이드 파일/history 백업은 숨김.
+      mapHistoryCountByPath.clear();
       for (const it of all) {
         if (isMapEntryPath(it.pathname)) items.push(it);
         else if (
@@ -340,6 +358,10 @@ async function refreshList(): Promise<void> {
         if (m) {
           const mainPath = `maps/${m[1]}/main.json`;
           folderTotalSize.set(mainPath, (folderTotalSize.get(mainPath) ?? 0) + it.size);
+          // history zip 개수도 카운트 (legacy 자산의 version fallback 용)
+          if (isMapHistoryPath(it.pathname) && it.pathname.endsWith('.zip')) {
+            mapHistoryCountByPath.set(mainPath, (mapHistoryCountByPath.get(mainPath) ?? 0) + 1);
+          }
         }
       }
     } else {
@@ -650,8 +672,17 @@ function makeItem(it: BlobItem): HTMLElement {
   } else if (activeCat === 'maps') {
     const nm = document.createElement('div');
     nm.className = 'name';
-    nm.textContent = mapMetaByPath.get(it.pathname)?.name
+    const mMeta = mapMetaByPath.get(it.pathname);
+    const baseLabel = mMeta?.name
       || (isZipMapEntryPath(it.pathname) ? mapBaseName(it.pathname) : shortName(it.pathname).replace(/\.[^.]+$/, ''));
+    nm.textContent = baseLabel;
+    if (isZipMapEntryPath(it.pathname)) {
+      const verSpan = document.createElement('span');
+      verSpan.className = 'lib-item-version';
+      verSpan.textContent = computeMapVersionShort(mMeta, it.pathname);
+      nm.appendChild(document.createTextNode(' '));
+      nm.appendChild(verSpan);
+    }
     const date = document.createElement('div');
     date.className = 'date';
     date.textContent = new Date(it.uploadedAt).toLocaleDateString();
@@ -1021,10 +1052,13 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
   // 통계 — ZIP 맵은 meta.info 에 이미 있음. legacy 면 JSON 직접 fetch.
   // 자산 ID — 폴더명 또는 meta.id (둘 다 같아야 정상). 사용자에게 보여 줘서 게임 manifest 작성에 쓸 수 있게.
   const assetId = meta?.id ?? (isZipMap ? mapBaseName(it.pathname) : baseName);
+  // 현재 버전 — meta.version 직접 사용. 옛 자산은 history 개수 + 1 fallback (legacy).
+  const versionLabel = computeMapVersionLabel(meta, it.pathname);
 
   const renderStats = (info: NonNullable<MapMeta['info']> | null): void => {
     const rows: Array<[string, string]> = [];
     rows.push(['id', assetId]);
+    rows.push(['version', versionLabel]);
     if (info) {
       if (info.width && info.height) rows.push(['size (tiles)', `${info.width} × ${info.height}`]);
       if (info.tilewidth && info.tileheight) rows.push(['tile', `${info.tilewidth} × ${info.tileheight}`]);
@@ -1225,10 +1259,22 @@ async function uploadMapNewVersion(currentEntry: BlobItem, baseName: string, new
       const origBlob = await uploadAsset(token, 'maps', origFile);
       const newOriginalZipUrl = origBlob.url;
       tick();
-      // 3) meta.json — 기존 meta merge + originalMapFilename/info/originalZipUrl 갱신
+      // 3) meta.json — 기존 meta merge + version + 1. version 누락(옛 자산) 시 history 개수
+      //    기준으로 보수적으로 추정: backup 추가 후 history 개수 = 옛 active 의 버전. +1 = 새 active.
       progress.setStage(`${baseName} — metadata`);
+      let baselineVersion = meta?.version;
+      if (baselineVersion == null) {
+        // 옛 자산 — meta 에 version 필드 없음. 방금 backup 까지 포함한 history 개수가 옛 active 의 v#.
+        try {
+          const all = await listAssets(token, 'maps');
+          const prefix = `${mapFolderPrefix(baseName)}_history/`;
+          baselineVersion = all.filter((b) => b.pathname.startsWith(prefix) && b.pathname.endsWith('.zip')).length;
+        } catch { baselineVersion = 1; }
+      }
+      const newVersion = baselineVersion + 1;
       const merged: MapMeta = {
         ...(meta ?? {}),
+        version: newVersion,
         format: 'zip',
         originalMapFilename: parsed.mapFilename,
         originalZipUrl: newOriginalZipUrl,
@@ -2640,6 +2686,7 @@ async function uploadZipMap(
       const meta: MapMeta = {
         id: assetId,
         name: displayName,
+        version: 1,  // 첫 업로드
         format: 'zip',
         originalMapFilename: parsed.mapFilename,
         originalZipUrl,
