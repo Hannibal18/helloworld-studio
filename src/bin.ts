@@ -64,7 +64,7 @@ export async function loadLibraryAssets(): Promise<void> {
       // .tsj/.png 등 보조 파일은 빈에 노출 X — map JSON 이 내부적으로 fetch.
     }
     if (mapCount + bgmCount > 0) {
-      showToast(`📚 라이브러리: 맵 ${mapCount}, BGM ${bgmCount} 로드`);
+      showToast(`Library loaded — ${mapCount} maps, ${bgmCount} audio`);
     }
     notify();
   } catch (e) {
@@ -111,7 +111,7 @@ function addUploaded(tab: 'maps' | 'chars' | 'bgm', file: File): void {
   } else if (tab === 'chars') {
     // 업로드 캐릭터는 charIdx=-1 + customUrl 로 저장. 추후 sprite 모듈에서 별도 처리 필요.
     // 현 MVP 에선 미지원 — 안내만.
-    showToast('캐릭터 업로드는 곧 지원됩니다 (지금은 미리 들어있는 LPC 9종만 가능)', 'err', 2500);
+    showToast('Custom character upload not yet supported — use built-in LPC sheets', 'err', 2500);
     URL.revokeObjectURL(url);
     return;
   } else {
@@ -154,9 +154,9 @@ function makeBinRow(asset: Asset): HTMLElement {
     void drawCharacterPreview(cx, asset.charIdx);
     thumb.appendChild(c);
   } else if (asset.kind === 'map') {
-    thumb.textContent = '🗺';
+    thumb.textContent = 'MAP';
   } else {
-    thumb.textContent = '🎵';
+    thumb.textContent = 'AUD';
   }
   row.appendChild(thumb);
 
@@ -166,14 +166,14 @@ function makeBinRow(asset: Asset): HTMLElement {
   if (asset.source === 'upload') {
     const meta = document.createElement('span');
     meta.className = 'meta';
-    meta.textContent = ' (업로드)';
+    meta.textContent = ' · uploaded';
     name.appendChild(meta);
   }
   row.appendChild(name);
 
   const useBtn = document.createElement('button');
   useBtn.className = 'st-btn use';
-  useBtn.textContent = '사용';
+  useBtn.textContent = 'Use';
   useBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     onUseAsset(asset);
@@ -188,10 +188,10 @@ function onUseAsset(asset: Asset): void {
   const scene = activeScene();
   if (asset.kind === 'map') {
     scene.mapAssetId = asset.id;
-    showToast(`맵 '${asset.name}' 적용`);
+    showToast(`Map · ${asset.name}`);
   } else if (asset.kind === 'bgm') {
     scene.bgm.assetId = asset.id;
-    showToast(`BGM '${asset.name}' 적용`);
+    showToast(`Audio · ${asset.name}`);
   } else if (asset.kind === 'char') {
     // 캐릭터는 트랙으로 추가. 시작 위치는 맵 중앙 (없으면 화면 중앙으로 폴백).
     const map = currentMap();
@@ -210,7 +210,7 @@ function onUseAsset(asset: Asset): void {
     // 새로 추가한 캐릭터를 바로 활성 트랙으로 → 카메라가 따라가서 보임
     state.rt.armedTrackId = newTrack.id;
     state.rt.selectedTrackId = newTrack.id;
-    showToast(`'${asset.name}' 추가 — 캔버스 탭으로 위치 조정`);
+    showToast(`Added · ${asset.name} — tap canvas to set start position`);
   }
   notify();
 }

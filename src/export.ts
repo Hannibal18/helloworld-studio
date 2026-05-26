@@ -56,11 +56,11 @@ function exportToFile(): void {
     return a && a.kind === 'bgm' && a.source === 'upload';
   });
   if (hasUploadedMap || hasUploadedBgm) {
-    showToast('업로드한 파일은 JSON 에 경로만 들어갑니다. 게임 코드에서 동일 파일을 public/ 에 배치하세요.', 'err', 3500);
+    showToast('Uploaded asset URLs are referenced — the same files must be reachable at playback time', 'err', 3500);
   }
   const safe = (state.project.projectName || 'cutscene').replace(/[^a-zA-Z0-9_\-\.가-힣]/g, '_');
   downloadJson(`${safe}.json`, data);
-  showToast('💾 Export 완료');
+  showToast('Exported');
 }
 
 export function serialize(project: CutsceneProject): ExportedCutscene {
@@ -114,7 +114,7 @@ function triggerImport(): void {
       const text = await f.text();
       const json = JSON.parse(text) as ExportedCutscene;
       importProject(json);
-      showToast('📥 Import 완료');
+      showToast('Imported');
     } catch (e) {
       showToast(`Import 실패: ${(e as Error).message}`, 'err', 3000);
     }

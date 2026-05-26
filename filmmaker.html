@@ -5,36 +5,37 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>🎬 필름메이커 · Helloworld Studio</title>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <!-- Galmuri 는 캔버스 안 픽셀 텍스트 전용 (말풍선 등) — UI 크롬은 시스템 폰트 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/quiple/galmuri/dist/galmuri.css" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <header class="st-topbar">
       <div class="st-topbar-left">
-        <strong class="st-brand">🎬 필름메이커</strong>
-        <input id="project-name" class="st-input st-input-title" type="text" value="새 컷씬" />
+        <strong class="st-brand">Filmmaker</strong>
+        <input id="project-name" class="st-input st-input-title" type="text" value="Untitled" />
       </div>
       <div class="st-topbar-right">
-        <a class="st-link" href="/">📚 라이브러리</a>
-        <button id="btn-import" class="st-btn" type="button">📥 Import</button>
-        <button id="btn-export" class="st-btn st-btn-primary" type="button">💾 Export</button>
+        <a class="st-link" href="/">Library</a>
+        <button id="btn-import" class="st-btn" type="button">Import</button>
+        <button id="btn-export" class="st-btn st-btn-primary" type="button">Export</button>
       </div>
     </header>
 
     <!-- 모바일 전용 부유 토글 — 노치/Safari UI 위에 항상 떠 있어 가려지지 않음 -->
-    <button id="btn-toggle-bin"   class="st-fab st-fab-left"  type="button" aria-label="미디어 빈">📁</button>
-    <button id="btn-toggle-props" class="st-fab st-fab-right" type="button" aria-label="속성 패널">⚙️</button>
+    <button id="btn-toggle-bin"   class="st-fab st-fab-left"  type="button" aria-label="Media bin">BIN</button>
+    <button id="btn-toggle-props" class="st-fab st-fab-right" type="button" aria-label="Properties">···</button>
 
     <div class="st-body">
       <!-- 좌: 미디어 빈 -->
       <aside class="st-bin">
         <div class="st-bin-tabs">
-          <button class="st-tab st-tab-active" data-tab="maps">🗺️ 맵</button>
-          <button class="st-tab" data-tab="chars">👤 캐릭터</button>
-          <button class="st-tab" data-tab="bgm">🎵 BGM</button>
+          <button class="st-tab st-tab-active" data-tab="maps">Maps</button>
+          <button class="st-tab" data-tab="chars">Characters</button>
+          <button class="st-tab" data-tab="bgm">Audio</button>
         </div>
         <div class="st-bin-actions">
-          <button id="btn-upload" class="st-btn st-btn-ghost" type="button">📁 업로드</button>
+          <button id="btn-upload" class="st-btn st-btn-ghost" type="button">Upload</button>
         </div>
         <div id="bin-list" class="st-bin-list"></div>
         <input id="bin-upload-input" type="file" class="hidden" />
@@ -47,7 +48,7 @@
           <canvas id="stage-canvas"></canvas>
           <div class="st-preview-hud">
             <span id="hud-time">0.00s / 0.00s</span>
-            <span id="hud-record" class="st-hud-rec hidden">● REC</span>
+            <span id="hud-record" class="st-hud-rec hidden">REC</span>
           </div>
           <!-- 가상 조이스틱 — 트랙 활성화(armed)면 표시. 캐릭터는 캐릭터를, 카메라는 카메라를 조종 -->
           <div id="touch-stick" class="st-stick hidden" aria-hidden="true">
@@ -55,30 +56,31 @@
           </div>
           <!-- 카메라 줌 컨트롤 — armedTrackId === '__camera__' 일 때만 표시 -->
           <div id="cam-zoom-ctrl" class="st-cam-zoom hidden">
-            <button id="cam-zoom-in"  type="button" aria-label="줌 인">＋</button>
-            <button id="cam-zoom-out" type="button" aria-label="줌 아웃">－</button>
+            <button id="cam-zoom-in"  type="button" aria-label="Zoom in">+</button>
+            <button id="cam-zoom-out" type="button" aria-label="Zoom out">−</button>
           </div>
         </div>
         <div class="st-transport">
-          <button id="tp-prev" class="st-btn st-tp" type="button" title="처음으로">⏮</button>
-          <button id="tp-play" class="st-btn st-tp st-tp-play" type="button" title="재생/정지 (Space)">⏵</button>
-          <button id="tp-rec" class="st-btn st-tp st-tp-rec" type="button" title="녹화 (R)">⏺</button>
+          <button id="tp-prev" class="st-btn st-tp" type="button" title="Go to start">⏮</button>
+          <button id="tp-play" class="st-btn st-tp st-tp-play" type="button" title="Play / Pause (Space)">▶</button>
+          <button id="tp-rec" class="st-btn st-tp st-tp-rec" type="button" title="Record (R)">●</button>
           <input id="tp-scrub" class="st-scrub" type="range" min="0" max="1000" value="0" />
           <span id="tp-time" class="st-tp-time">0.00 / 0.00</span>
           <span class="st-tp-spacer"></span>
-          <label class="st-tp-zoom" title="카메라 줌">
-            🔍 <input id="tp-zoom" type="range" min="50" max="400" value="100" />
+          <label class="st-tp-zoom" title="Preview zoom">
+            <span>ZOOM</span>
+            <input id="tp-zoom" type="range" min="50" max="400" value="100" />
             <span id="tp-zoom-val">1.0x</span>
           </label>
-          <button id="tp-cam-key" class="st-btn" type="button" title="현재 카메라 상태를 키프레임으로 추가">📍 카메라 키</button>
+          <button id="tp-cam-key" class="st-btn" type="button" title="Insert keyframe at current state">Insert key</button>
         </div>
       </section>
 
       <!-- 우: 속성 패널 -->
       <aside class="st-props">
-        <div class="st-props-head">⚙️ 속성</div>
+        <div class="st-props-head">Properties</div>
         <div id="props-body" class="st-props-body">
-          <p class="st-props-empty">트랙·클립을 선택하면 속성이 여기에 표시됩니다.</p>
+          <p class="st-props-empty">Select a track or clip to edit its properties.</p>
         </div>
       </aside>
     </div>
@@ -86,13 +88,14 @@
     <!-- 하: 타임라인 -->
     <section class="st-timeline">
       <div class="st-timeline-head">
-        <span class="st-timeline-title">⏱ 타임라인</span>
-        <button id="btn-add-char" class="st-btn" type="button">➕ 캐릭터 추가</button>
-        <button id="btn-add-bubble" class="st-btn" type="button">💬 말풍선 추가</button>
-        <button id="btn-add-scene" class="st-btn" type="button">🎞 씬 추가</button>
+        <span class="st-timeline-title">Timeline</span>
+        <button id="btn-add-char" class="st-btn" type="button">+ Character</button>
+        <button id="btn-add-bubble" class="st-btn" type="button">+ Dialogue</button>
+        <button id="btn-add-scene" class="st-btn" type="button">+ Scene</button>
         <span class="st-flex-spacer"></span>
-        <label class="st-tp-zoom">
-          ⏱ <input id="tl-zoom" type="range" min="20" max="400" value="100" />
+        <label class="st-tp-zoom" title="Timeline zoom">
+          <span>SCALE</span>
+          <input id="tl-zoom" type="range" min="20" max="400" value="100" />
         </label>
       </div>
       <div class="st-timeline-body" id="timeline-body"></div>

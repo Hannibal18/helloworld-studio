@@ -225,9 +225,9 @@ function render(): void {
     // 맵 미선택 — 그리드 배경.
     drawCheckerboard(cssW, cssH);
     if (scene.mapAssetId) {
-      drawCenterText(cssW, cssH, '맵 로딩 중...', '#999');
+      drawCenterText(cssW, cssH, 'Loading map…', '#8a909a');
     } else {
-      drawCenterText(cssW, cssH, '좌측 빈에서 맵을 선택하세요', '#888');
+      drawCenterText(cssW, cssH, 'Select a map from the bin', '#5a606a');
     }
   }
 
@@ -304,10 +304,10 @@ function drawCountdown(t: number, w: number, h: number): void {
   ctx.strokeText(String(n), cx, cy);
   ctx.fillStyle = '#fff';
   ctx.fillText(String(n), cx, cy);
-  // 안내
-  ctx.font = `${Math.round(fontSize * 0.18)}px Galmuri11, system-ui, sans-serif`;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
-  ctx.fillText('조이스틱을 미리 잡으면 0초에 즉시 출발', cx, cy + radius + fontSize * 0.3);
+  // hint
+  ctx.font = `${Math.round(fontSize * 0.18)}px -apple-system, system-ui, sans-serif`;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+  ctx.fillText('Hold joystick — releases at 0', cx, cy + radius + fontSize * 0.3);
   ctx.restore();
 }
 

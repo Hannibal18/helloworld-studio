@@ -1,17 +1,14 @@
 // 하단 타임라인 — 트랙 행 + 클립 + 키프레임 + 플레이헤드.
 //
-// 트랙 종류:
-//   🎥 카메라 (키프레임 다이아몬드)
-//   🎵 BGM (씬 전체 폭의 페이드 인/아웃 envelope 표시)
-//   👤 캐릭터들 (녹화된 길이만큼 막대, 활성 트랙은 ● 표시)
-//   💬 말풍선 (여러 클립, 드래그 가능)
+// 트랙 종류: Camera (키프레임 다이아몬드) / Audio (페이드 envelope) /
+// Characters (녹화 막대) / Dialogue (다중 클립, 드래그)
 
 import { state, notify, activeScene, findAsset } from './state';
 import type { Bubble, CharTrack, CameraKey } from './state';
 import { clamp, startPointerDrag } from './util';
 import { seek } from './playback';
 
-const LABEL_W = 160;
+const LABEL_W = 140;
 
 let body!: HTMLElement;
 
@@ -168,7 +165,7 @@ function makeCameraTrack(keys: CameraKey[], px: number): HTMLElement {
   label.className = 'tl-track-label';
   const dot = document.createElement('span');
   dot.className = 'dot' + (state.rt.armedTrackId === '__camera__' ? ' armed' : '');
-  dot.title = '카메라 ON — 조이스틱 = 패닝, +/- = 줌';
+  dot.title = 'Arm Camera — joystick pans, +/- zooms';
   dot.addEventListener('click', (e) => {
     e.stopPropagation();
     state.rt.armedTrackId = state.rt.armedTrackId === '__camera__' ? null : '__camera__';
@@ -176,7 +173,7 @@ function makeCameraTrack(keys: CameraKey[], px: number): HTMLElement {
   });
   label.appendChild(dot);
   const ico = document.createElement('span');
-  ico.className = 'ico'; ico.textContent = '🎥';
+  ico.className = 'ico'; ico.textContent = 'CAM';
   label.appendChild(ico);
   const name = document.createElement('span');
   name.className = 'name'; name.textContent = 'Camera';
@@ -221,7 +218,7 @@ function makeBgmTrack(bgm: ReturnType<typeof activeScene>['bgm'], duration: numb
   const row = document.createElement('div');
   row.className = 'tl-track';
   const asset = findAsset(bgm.assetId);
-  const label = makeLabel('🎵', asset ? asset.name : '(BGM 없음)');
+  const label = makeLabel('AUD', asset ? asset.name : 'No audio');
   label.addEventListener('click', () => { state.rt.selectedTrackId = '__bgm__'; notify(); });
   row.appendChild(label);
   const cont = document.createElement('div');
@@ -260,7 +257,7 @@ function makeCharTrack(trk: CharTrack, px: number): HTMLElement {
   label.className = 'tl-track-label';
   const dot = document.createElement('span');
   dot.className = 'dot' + (state.rt.armedTrackId === trk.id ? ' armed' : '');
-  dot.title = '카메라 ON — 이 트랙을 녹화';
+  dot.title = 'Arm this track for recording';
   dot.addEventListener('click', (e) => {
     e.stopPropagation();
     state.rt.armedTrackId = state.rt.armedTrackId === trk.id ? null : trk.id;
@@ -268,7 +265,7 @@ function makeCharTrack(trk: CharTrack, px: number): HTMLElement {
   });
   label.appendChild(dot);
   const ico = document.createElement('span');
-  ico.className = 'ico'; ico.textContent = '👤';
+  ico.className = 'ico'; ico.textContent = 'CHR';
   label.appendChild(ico);
   const name = document.createElement('span');
   name.className = 'name';
@@ -276,7 +273,7 @@ function makeCharTrack(trk: CharTrack, px: number): HTMLElement {
   label.appendChild(name);
   const delBtn = document.createElement('button');
   delBtn.className = 'st-btn'; delBtn.textContent = '✕';
-  delBtn.title = '트랙 삭제';
+  delBtn.title = 'Remove track';
   delBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     const scene = activeScene();
@@ -305,10 +302,10 @@ function makeCharTrack(trk: CharTrack, px: number): HTMLElement {
     cont.appendChild(clip);
   } else {
     const hint = document.createElement('div');
-    hint.style.cssText = 'position:absolute;left:8px;top:50%;transform:translateY(-50%);color:#9aa2ad;font-size:11px;';
+    hint.style.cssText = 'position:absolute;left:8px;top:50%;transform:translateY(-50%);color:var(--text-mute);font-size:11px;';
     hint.textContent = state.rt.armedTrackId === trk.id
-      ? (state.rt.countingDown ? '🎬 곧 시작!' : '⏺ 버튼 누르면 3-2-1 카운트다운 → 녹화')
-      : '● 점을 눌러 활성화';
+      ? (state.rt.countingDown ? 'Starting…' : 'Press ● to start 3-2-1 countdown')
+      : 'Click the dot to arm this track';
     cont.appendChild(hint);
   }
   row.appendChild(cont);
@@ -318,7 +315,7 @@ function makeCharTrack(trk: CharTrack, px: number): HTMLElement {
 function makeBubblesTrack(bubbles: Bubble[], px: number): HTMLElement {
   const row = document.createElement('div');
   row.className = 'tl-track';
-  const label = makeLabel('💬', '말풍선');
+  const label = makeLabel('DLG', 'Dialogue');
   row.appendChild(label);
   const cont = document.createElement('div');
   cont.className = 'tl-track-content';

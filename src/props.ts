@@ -32,79 +32,79 @@ export function renderProps(): void {
   renderSceneProps(scene);
 }
 
-// ===== 말풍선 =====
+// ===== Dialogue =====
 function renderBubbleProps(b: Bubble): void {
   body.innerHTML = '';
-  body.appendChild(h('div', 'st-props-section-title', '💬 말풍선'));
+  body.appendChild(h('div', 'st-props-section-title', 'Dialogue'));
   const scene = activeScene();
 
-  const charSel = sel('캐릭터', b.trackId, scene.tracks.map((t) => ({ value: t.id, label: t.name })), (v) => { b.trackId = v; notify(); });
+  const charSel = sel('Speaker', b.trackId, scene.tracks.map((t) => ({ value: t.id, label: t.name })), (v) => { b.trackId = v; notify(); });
   body.appendChild(charSel);
 
-  body.appendChild(numberRow('시점 (sec)', b.t, 0, scene.duration, 0.05, (v) => { b.t = v; notify(); }));
-  body.appendChild(numberRow('지속시간 (sec)', b.dur, 0.1, scene.duration, 0.05, (v) => { b.dur = v; notify(); }));
+  body.appendChild(numberRow('Time (s)', b.t, 0, scene.duration, 0.05, (v) => { b.t = v; notify(); }));
+  body.appendChild(numberRow('Duration (s)', b.dur, 0.1, scene.duration, 0.05, (v) => { b.dur = v; notify(); }));
 
-  body.appendChild(textareaRow('텍스트', b.text, (v) => { b.text = v; notify(); }));
+  body.appendChild(textareaRow('Text', b.text, (v) => { b.text = v; notify(); }));
 
-  body.appendChild(checkboxRow('글자 하나씩 타이핑', b.typewriter, (v) => { b.typewriter = v; notify(); }));
-  body.appendChild(rangeRow('속도 (글자/초)', b.cps, 5, 60, 1, (v) => { b.cps = v; notify(); }));
+  body.appendChild(checkboxRow('Typewriter effect', b.typewriter, (v) => { b.typewriter = v; notify(); }));
+  body.appendChild(rangeRow('Speed (chars/s)', b.cps, 5, 60, 1, (v) => { b.cps = v; notify(); }));
 
-  body.appendChild(deleteBtn('💬 이 말풍선 삭제', () => {
+  body.appendChild(deleteBtn('Delete dialogue', () => {
     scene.bubbles = scene.bubbles.filter((x) => x.id !== b.id);
     state.rt.selectedBubbleId = null;
     notify();
   }));
 }
 
-// ===== 카메라 키프레임 =====
+// ===== Camera keyframe =====
 function renderCamProps(k: CameraKey, idx: number): void {
   body.innerHTML = '';
-  body.appendChild(h('div', 'st-props-section-title', `🎥 카메라 키 #${idx + 1}`));
+  body.appendChild(h('div', 'st-props-section-title', `Camera key #${idx + 1}`));
   const scene = activeScene();
 
-  body.appendChild(numberRow('시점 (sec)', k.t, 0, scene.duration, 0.05, (v) => { k.t = v; scene.camera.keyframes.sort((a, b) => a.t - b.t); notify(); }));
+  body.appendChild(numberRow('Time (s)', k.t, 0, scene.duration, 0.05, (v) => { k.t = v; scene.camera.keyframes.sort((a, b) => a.t - b.t); notify(); }));
   body.appendChild(numberRow('X (world)', k.x, -10000, 10000, 1, (v) => { k.x = v; notify(); }));
   body.appendChild(numberRow('Y (world)', k.y, -10000, 10000, 1, (v) => { k.y = v; notify(); }));
-  body.appendChild(rangeRow('줌', k.zoom, 0.2, 4, 0.05, (v) => { k.zoom = v; notify(); }));
+  body.appendChild(rangeRow('Zoom', k.zoom, 0.2, 4, 0.05, (v) => { k.zoom = v; notify(); }));
 
-  const easeSel = sel('보간', k.ease, [
+  const easeSel = sel('Interpolation', k.ease, [
     { value: 'linear', label: 'linear' },
     { value: 'ease-in-out', label: 'ease-in-out' },
   ], (v) => { k.ease = v as 'linear' | 'ease-in-out'; notify(); });
   body.appendChild(easeSel);
 
-  body.appendChild(sel('따라가기 (follow)', k.followTrackId ?? '', [
-    { value: '', label: '(없음 — 고정 X/Y)' },
+  body.appendChild(sel('Follow', k.followTrackId ?? '', [
+    { value: '', label: '(none — fixed X/Y)' },
     ...scene.tracks.map((t) => ({ value: t.id, label: t.name })),
   ], (v) => { k.followTrackId = v || undefined; notify(); }));
 
-  body.appendChild(deleteBtn('🎥 이 키프레임 삭제', () => {
+  body.appendChild(deleteBtn('Delete keyframe', () => {
     scene.camera.keyframes.splice(idx, 1);
     state.rt.selectedCamKey = null;
     notify();
   }));
 }
 
-// ===== 캐릭터 트랙 =====
+// ===== Character track =====
 function renderTrackProps(trk: CharTrack): void {
   body.innerHTML = '';
-  body.appendChild(h('div', 'st-props-section-title', '👤 캐릭터 트랙'));
-  body.appendChild(textRow('이름', trk.name, (v) => { trk.name = v; notify(); }));
+  body.appendChild(h('div', 'st-props-section-title', 'Character track'));
+  body.appendChild(textRow('Name', trk.name, (v) => { trk.name = v; notify(); }));
 
   const asset = findAsset(trk.charAssetId);
-  body.appendChild(infoRow('스프라이트', asset ? asset.name : '(없음)'));
+  body.appendChild(infoRow('Sprite', asset ? asset.name : '(none)'));
 
-  body.appendChild(numberRow('시작 X', trk.startX, -10000, 10000, 1, (v) => { trk.startX = v; notify(); }));
-  body.appendChild(numberRow('시작 Y', trk.startY, -10000, 10000, 1, (v) => { trk.startY = v; notify(); }));
-  body.appendChild(sel('시작 방향', trk.startDir, [
-    { value: 'down', label: '↓ down' }, { value: 'up', label: '↑ up' },
-    { value: 'left', label: '← left' }, { value: 'right', label: '→ right' },
+  body.appendChild(numberRow('Start X', trk.startX, -10000, 10000, 1, (v) => { trk.startX = v; notify(); }));
+  body.appendChild(numberRow('Start Y', trk.startY, -10000, 10000, 1, (v) => { trk.startY = v; notify(); }));
+  body.appendChild(sel('Facing', trk.startDir, [
+    { value: 'down', label: 'down' }, { value: 'up', label: 'up' },
+    { value: 'left', label: 'left' }, { value: 'right', label: 'right' },
   ], (v) => { trk.startDir = v as CharTrack['startDir']; notify(); }));
 
-  body.appendChild(infoRow('녹화된 키프레임', String(trk.keyframes.length)));
+  body.appendChild(infoRow('Keyframes', String(trk.keyframes.length)));
 
   body.appendChild(h('div', 'st-props-section-title', ''));
-  const clearBtn = h('button', 'st-btn', '🗑 녹화 지우기') as HTMLButtonElement;
+  const clearBtn = h('button', 'st-btn', 'Clear recording') as HTMLButtonElement;
   clearBtn.addEventListener('click', () => {
     trk.keyframes = [];
     trk.recorded = false;
@@ -113,29 +113,29 @@ function renderTrackProps(trk: CharTrack): void {
   body.appendChild(clearBtn);
 }
 
-// ===== 씬 =====
+// ===== Scene =====
 function renderSceneProps(scene: Scene): void {
   body.innerHTML = '';
-  body.appendChild(h('div', 'st-props-section-title', `🎞 ${scene.name}`));
-  body.appendChild(textRow('이름', scene.name, (v) => { scene.name = v; notify(); }));
-  body.appendChild(numberRow('길이 (sec)', scene.duration, 0.5, 600, 0.5, (v) => { scene.duration = v; notify(); }));
+  body.appendChild(h('div', 'st-props-section-title', `Scene · ${scene.name}`));
+  body.appendChild(textRow('Name', scene.name, (v) => { scene.name = v; notify(); }));
+  body.appendChild(numberRow('Duration (s)', scene.duration, 0.5, 600, 0.5, (v) => { scene.duration = v; notify(); }));
 
-  body.appendChild(h('div', 'st-props-section-title', '전환 인'));
-  body.appendChild(sel('타입', scene.transitionIn.type, [
-    { value: 'cut', label: 'cut (즉시)' },
+  body.appendChild(h('div', 'st-props-section-title', 'Transition in'));
+  body.appendChild(sel('Type', scene.transitionIn.type, [
+    { value: 'cut', label: 'cut' },
     { value: 'fade-black', label: 'fade to black' },
     { value: 'fade-white', label: 'fade to white' },
     { value: 'wipe', label: 'wipe' },
   ], (v) => { scene.transitionIn.type = v as Scene['transitionIn']['type']; notify(); }));
-  body.appendChild(numberRow('지속 (sec)', scene.transitionIn.dur, 0, 5, 0.1, (v) => { scene.transitionIn.dur = v; notify(); }));
+  body.appendChild(numberRow('Duration (s)', scene.transitionIn.dur, 0, 5, 0.1, (v) => { scene.transitionIn.dur = v; notify(); }));
 
-  body.appendChild(h('div', 'st-props-section-title', 'BGM'));
+  body.appendChild(h('div', 'st-props-section-title', 'Audio'));
   const bgmAsset = findAsset(scene.bgm.assetId);
-  body.appendChild(infoRow('파일', bgmAsset ? bgmAsset.name : '(빈에서 선택)'));
-  body.appendChild(rangeRow('볼륨', scene.bgm.volume, 0, 1, 0.05, (v) => { scene.bgm.volume = v; notify(); }));
-  body.appendChild(numberRow('페이드 인 (sec)', scene.bgm.fadeIn, 0, 10, 0.1, (v) => { scene.bgm.fadeIn = v; notify(); }));
-  body.appendChild(numberRow('페이드 아웃 (sec)', scene.bgm.fadeOut, 0, 10, 0.1, (v) => { scene.bgm.fadeOut = v; notify(); }));
-  body.appendChild(checkboxRow('루프', scene.bgm.loop, (v) => { scene.bgm.loop = v; notify(); }));
+  body.appendChild(infoRow('File', bgmAsset ? bgmAsset.name : '(none — pick from bin)'));
+  body.appendChild(rangeRow('Volume', scene.bgm.volume, 0, 1, 0.05, (v) => { scene.bgm.volume = v; notify(); }));
+  body.appendChild(numberRow('Fade in (s)', scene.bgm.fadeIn, 0, 10, 0.1, (v) => { scene.bgm.fadeIn = v; notify(); }));
+  body.appendChild(numberRow('Fade out (s)', scene.bgm.fadeOut, 0, 10, 0.1, (v) => { scene.bgm.fadeOut = v; notify(); }));
+  body.appendChild(checkboxRow('Loop', scene.bgm.loop, (v) => { scene.bgm.loop = v; notify(); }));
 }
 
 // ===== 폼 헬퍼 =====

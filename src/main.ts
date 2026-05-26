@@ -41,7 +41,7 @@ ready(() => {
       const json = JSON.parse(raw);
       if (json && json.version === 1) {
         importProject(json);
-        showToast('📁 이전 작업 복원됨');
+        showToast('Restored from local storage');
       }
     }
   } catch (e) {
@@ -107,7 +107,7 @@ ready(() => {
     sc.camera.keyframes.push({ t, x, y, zoom, ease: 'ease-in-out' });
     sc.camera.keyframes.sort((a, b) => a.t - b.t);
     state.rt.selectedCamKey = sc.camera.keyframes.findIndex((k) => k.t === t);
-    showToast('🎥 카메라 키프레임 추가');
+    showToast('Camera keyframe inserted');
     notify();
   });
 
@@ -115,14 +115,14 @@ ready(() => {
   document.getElementById('btn-add-char')!.addEventListener('click', () => {
     state.rt.binTab = 'chars';
     notify();
-    showToast('좌측 빈의 캐릭터 옆 "사용" 클릭');
+    showToast('Pick a character from the bin on the left');
   });
 
   // ===== 말풍선 추가 =====
   document.getElementById('btn-add-bubble')!.addEventListener('click', () => {
     const sc = activeScene();
     if (sc.tracks.length === 0) {
-      showToast('먼저 캐릭터를 추가하세요', 'err');
+      showToast('Add a character first', 'err');
       return;
     }
     const trackId = state.rt.selectedTrackId && !state.rt.selectedTrackId.startsWith('__')
@@ -133,7 +133,7 @@ ready(() => {
       id: uid('bub'),
       trackId,
       t, dur: 2,
-      text: '안녕!',
+      text: 'Hello',
       typewriter: true,
       cps: 20,
     };
@@ -210,7 +210,7 @@ ready(() => {
       // 첫 렌더 직후 — 안내 토스트 (복원 토스트가 이미 있으면 덮지 않게 살짝 늦춤)
       window.setTimeout(() => {
         if (state.assets.length > 0 && state.project.scenes.every((s) => s.tracks.length === 0 && !s.mapAssetId)) {
-          showToast('🎬 스튜디오 시작! 맵 → 캐릭터 → 녹화(⏺) 순서');
+          showToast('Filmmaker ready — select Map, add Character, then Record');
         }
       }, 1500);
     }

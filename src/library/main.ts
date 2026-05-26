@@ -37,13 +37,9 @@ function shortName(pathname: string): string {
   return pathname.split('/').slice(1).join('/') || pathname;
 }
 
-function iconFor(pathname: string): string {
+function extLabel(pathname: string): string {
   const ext = pathname.split('.').pop()?.toLowerCase() ?? '';
-  if (['json', 'tmj'].includes(ext)) return '🗺';
-  if (['tsj'].includes(ext)) return '🧩';
-  if (['png', 'jpg', 'jpeg'].includes(ext)) return '🖼';
-  if (['mp3', 'ogg', 'wav', 'm4a'].includes(ext)) return '🎵';
-  return '📄';
+  return ext.toUpperCase();
 }
 
 async function refreshList(): Promise<void> {
@@ -52,7 +48,7 @@ async function refreshList(): Promise<void> {
   try {
     const items = await listAssets(token, activeCat);
     if (items.length === 0) {
-      list.innerHTML = `<li class="lib-empty">아직 ${activeCat === 'maps' ? '맵' : 'BGM'} 이 없습니다. 위에서 업로드하세요.</li>`;
+      list.innerHTML = `<li class="lib-empty">No ${activeCat === 'maps' ? 'maps' : 'audio'} yet. Upload above.</li>`;
       return;
     }
     list.innerHTML = '';
@@ -65,7 +61,7 @@ async function refreshList(): Promise<void> {
       location.reload();
       return;
     }
-    list.innerHTML = `<li class="lib-empty">목록 조회 실패: ${(e as Error).message}</li>`;
+    list.innerHTML = `<li class="lib-empty">Failed to load: ${(e as Error).message}</li>`;
   }
 }
 
@@ -73,7 +69,7 @@ function makeItem(it: BlobItem): HTMLElement {
   const li = document.createElement('li');
   li.className = 'lib-item';
   const ico = document.createElement('div');
-  ico.className = 'icon'; ico.textContent = iconFor(it.pathname);
+  ico.className = 'ext'; ico.textContent = extLabel(it.pathname);
   const meta = document.createElement('div');
   meta.className = 'meta';
   const nm = document.createElement('div');
@@ -83,12 +79,12 @@ function makeItem(it: BlobItem): HTMLElement {
   sub.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   meta.appendChild(nm); meta.appendChild(sub);
   const del = document.createElement('button');
-  del.className = 'del'; del.textContent = '🗑'; del.title = '삭제';
+  del.className = 'del'; del.textContent = '×'; del.title = 'Delete';
   del.addEventListener('click', async () => {
-    if (!confirm(`'${shortName(it.pathname)}' 삭제할까요?`)) return;
+    if (!confirm(`Delete "${shortName(it.pathname)}"?`)) return;
     try {
       await deleteAsset(token, it.url);
-      showToast('삭제 완료');
+      showToast('Deleted');
       refreshList();
     } catch (e) {
       showToast((e as Error).message, 'err');
@@ -106,7 +102,7 @@ async function handleFiles(files: FileList | File[]): Promise<void> {
   for (const f of arr) {
     const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
     if (!EXT_BY_CAT[activeCat].includes(ext)) {
-      showToast(`${f.name} — 이 탭에서 못 받는 확장자(.${ext})`, 'err', 3000);
+      showToast(`${f.name} — extension .${ext} not allowed in this tab`, 'err', 3000);
       continue;
     }
     const row = document.createElement('div');
@@ -122,11 +118,11 @@ async function handleFiles(files: FileList | File[]): Promise<void> {
         pct.textContent = p + '%';
       });
       row.classList.add('ok');
-      pct.textContent = '✓';
+      pct.textContent = 'OK';
     } catch (e) {
       row.classList.add('err');
-      pct.textContent = '✗';
-      const msg = e instanceof AuthError ? '인증 만료 — 새로고침' : (e as Error).message;
+      pct.textContent = 'ERR';
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
       row.querySelector('.name')!.textContent = `${f.name} — ${msg}`;
       if (e instanceof AuthError) { clearToken(); }
     }

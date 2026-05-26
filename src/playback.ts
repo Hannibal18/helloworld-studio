@@ -275,12 +275,12 @@ export function startRecord(): void {
       scene.camera.keyframes = [];
       state.rt.sceneTime = 0;
       lastSample = -1;
-      showToast('🆕 카메라 새 녹화');
+      showToast('Camera — new recording');
     } else if (T >= lastT - APPEND_EPS) {
       const last = ks[ks.length - 1];
       liveCamX = last.x; liveCamY = last.y; liveCamZoom = last.zoom;
       lastSample = last.t;
-      showToast(`▶ 카메라 ${T.toFixed(1)}s 부터 이어 녹화`);
+      showToast(`Camera — appending from ${T.toFixed(1)}s`);
     } else {
       // 중간부터 덮어쓰기 — 그 시점 보간 위치/줌에서 출발
       // sampleCamera 는 fallback 인자가 필요 — 적당히 맵 중앙
@@ -291,7 +291,7 @@ export function startRecord(): void {
       scene.camera.keyframes = ks.filter((k) => k.t < T);
       liveCamX = sm.x; liveCamY = sm.y; liveCamZoom = sm.zoom;
       lastSample = T;
-      showToast(`✂ 카메라 ${T.toFixed(1)}s 부터 다시 녹화`);
+      showToast(`Camera — overwriting from ${T.toFixed(1)}s`);
     }
   } else if (trk) {
     // ===== 캐릭터 녹화 =====
@@ -306,18 +306,18 @@ export function startRecord(): void {
       liveDir = trk.startDir;
       state.rt.sceneTime = 0;
       lastSample = -1;
-      showToast('🆕 새 녹화 — 처음부터');
+      showToast('New recording — from start');
     } else if (T >= lastT - APPEND_EPS) {
       const last = ks[ks.length - 1];
       liveX = last.x; liveY = last.y; liveDir = last.dir;
       lastSample = last.t;
-      showToast(`▶ ${T.toFixed(1)}s 부터 이어 녹화`);
+      showToast(`Appending from ${T.toFixed(1)}s`);
     } else {
       const sm = sampleTrack(trk, T);
       trk.keyframes = ks.filter((k) => k.t < T);
       liveX = sm.x; liveY = sm.y; liveDir = sm.dir;
       lastSample = T;
-      showToast(`✂ ${T.toFixed(1)}s 부터 다시 녹화`);
+      showToast(`Overwriting from ${T.toFixed(1)}s`);
     }
     liveWalk = false;
   }
@@ -352,12 +352,12 @@ export function stopRecord(): void {
   const isCamArmed = state.rt.armedTrackId === CAMERA_ARMED_ID;
   if (isCamArmed) {
     scene.camera.keyframes.push({ t: state.rt.sceneTime, x: liveCamX, y: liveCamY, zoom: liveCamZoom, ease: 'linear' });
-    showToast(`✓ 카메라 ${state.rt.sceneTime.toFixed(1)}초 녹화 (${scene.camera.keyframes.length}키프레임)`, 'ok', 2500);
+    showToast(`Camera recorded — ${state.rt.sceneTime.toFixed(1)}s, ${scene.camera.keyframes.length} keyframes`, 'ok', 2500);
   } else {
     const trk = trackById(scene, state.rt.armedTrackId);
     if (trk) {
       trk.keyframes.push({ t: state.rt.sceneTime, x: liveX, y: liveY, dir: liveDir, walk: false });
-      showToast(`✓ ${state.rt.sceneTime.toFixed(1)}초 녹화 완료 (${trk.keyframes.length}키프레임)`, 'ok', 2500);
+      showToast(`Recorded — ${state.rt.sceneTime.toFixed(1)}s, ${trk.keyframes.length} keyframes`, 'ok', 2500);
     }
   }
   // 씬 길이를 녹화 끝까지 확장 (이미 advance 에서 확장 중이지만 안전망)
