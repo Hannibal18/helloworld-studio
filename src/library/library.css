@@ -175,6 +175,9 @@
   gap: 12px;
   position: sticky;
   top: 14px;
+  /* 내용이 뷰포트보다 길면 패널 자체가 스크롤 — sticky 라서 페이지 스크롤로는 안 닿음. */
+  max-height: calc(100vh - 28px);
+  overflow-y: auto;
 }
 .lib-detail-preview {
   width: 100%; height: auto;
