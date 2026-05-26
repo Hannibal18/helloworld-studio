@@ -17,6 +17,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   try {
     const result = await list({ prefix });
+    // 라이브러리 상태는 항상 최신을 줘야 — CDN/브라우저 캐시 차단
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.status(200).json({ blobs: result.blobs });
   } catch (e) {
     res.status(500).json({ error: (e as Error).message });

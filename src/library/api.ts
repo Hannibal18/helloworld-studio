@@ -14,6 +14,7 @@ export interface BlobItem {
 export async function listAssets(token: string, category: 'maps' | 'characters' | 'bgm' | '_schemas' | '_schemas' | 'all'): Promise<BlobItem[]> {
   const r = await fetch(`/api/list?category=${category}`, {
     headers: { 'x-studio-token': token },
+    cache: 'no-store',
   });
   if (r.status === 401) throw new AuthError();
   if (!r.ok) throw new Error(`목록 조회 실패 (${r.status})`);

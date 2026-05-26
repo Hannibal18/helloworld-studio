@@ -160,7 +160,7 @@ async function refreshList(): Promise<void> {
         try {
           const r = await fetch(s.url, { cache: 'reload' });
           if (!r.ok) return;
-          const j = await r.json() as { actions?: LPCAction[]; body?: BodyType; name?: string; race?: string };
+          const j = await r.json() as { actions?: LPCAction[]; body?: BodyType; name?: string; race?: string; fields?: Record<string, string> };
           const pngPath = s.pathname.replace(/\.meta\.json$/, '.png');
           if (Array.isArray(j.actions)) {
             charMetaByPath.set(pngPath, {
@@ -168,6 +168,7 @@ async function refreshList(): Promise<void> {
               body: j.body,
               name: j.name,
               race: j.race,
+              fields: j.fields,
             });
           }
         } catch { /* 무시 */ }
