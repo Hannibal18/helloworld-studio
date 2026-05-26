@@ -33,8 +33,22 @@ const EXT_BY_CAT: Record<Category, string[]> = {
 };
 
 let token = '';
-let activeCat: Category = 'maps';     // 마지막 본 자산 카테고리 (settings 클릭 시에도 유지)
-let inSettings = false;                // Settings 탭 활성 여부
+// 탭 상태는 새로고침 후에도 유지 — 사용자는 마지막으로 보던 탭에서 작업을 이어서 함.
+const TAB_STORAGE_KEY = 'studio.lib.activeTab';
+type TabKey = Category | 'settings';
+function loadInitialTab(): TabKey {
+  try {
+    const v = localStorage.getItem(TAB_STORAGE_KEY);
+    if (v === 'maps' || v === 'characters' || v === 'bgm' || v === 'settings') return v;
+  } catch { /* localStorage 막혔으면 default */ }
+  return 'maps';
+}
+function persistTab(tab: TabKey): void {
+  try { localStorage.setItem(TAB_STORAGE_KEY, tab); } catch { /* 무시 */ }
+}
+const initialTab = loadInitialTab();
+let activeCat: Category = initialTab === 'settings' ? 'maps' : initialTab;
+let inSettings = initialTab === 'settings';
 
 type BodyType = 'male' | 'female' | 'none';
 interface CharMeta {
@@ -2082,24 +2096,30 @@ ready(async () => {
   await loadAllSchemas(token);
 
   // 탭 — Settings 는 별도. asset 탭 클릭 시 inSettings 해제.
+  const applyTabHighlight = (): void => {
+    document.querySelectorAll('.lib-tab').forEach((b) => {
+      const t = (b as HTMLElement).dataset.cat;
+      const active = inSettings ? t === 'settings' : t === activeCat;
+      b.classList.toggle('lib-tab-active', active);
+    });
+  };
   document.querySelectorAll<HTMLButtonElement>('.lib-tab').forEach((btn) => {
     btn.addEventListener('click', () => {
       const target = btn.dataset.cat;
       if (target === 'settings') {
         inSettings = true;
+        persistTab('settings');
       } else {
         inSettings = false;
         activeCat = target as Category;
+        persistTab(activeCat);
       }
-      // 탭 시각 활성: Settings 면 Settings 만, 아니면 activeCat 만
-      document.querySelectorAll('.lib-tab').forEach((b) => {
-        const t = (b as HTMLElement).dataset.cat;
-        const active = inSettings ? t === 'settings' : t === activeCat;
-        b.classList.toggle('lib-tab-active', active);
-      });
+      applyTabHighlight();
       refreshList();
     });
   });
+  // 새로고침 후 복원된 탭의 highlight 도 즉시 반영
+  applyTabHighlight();
 
   // 파일 선택
   const fileIn = document.getElementById('file-input') as HTMLInputElement;
