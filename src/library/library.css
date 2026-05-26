@@ -1,5 +1,15 @@
 /* 라이브러리 페이지 전용 스타일 — studio 의 다크 테마(src/style.css) 위에 얹음. */
 
+/* 필름메이커 진입 강조 링크 (라이브러리 topbar 우상단) */
+.st-link-primary {
+  background: var(--accent);
+  color: #0a1018 !important;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+.st-link-primary:hover { background: #6db4ff; text-decoration: none !important; }
+
 .lib-main {
   max-width: 920px;
   margin: 0 auto;

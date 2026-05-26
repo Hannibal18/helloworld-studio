@@ -10,8 +10,9 @@ export default defineConfig({
     sourcemap: true,
     rollupOptions: {
       input: {
+        // index = 라이브러리 (메인 진입), filmmaker = 컷씬 에디터
         main: 'index.html',
-        library: 'library.html',
+        filmmaker: 'filmmaker.html',
       },
     },
   },

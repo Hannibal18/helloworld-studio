@@ -3,104 +3,56 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>🎬 컷씬 스튜디오</title>
+    <title>📚 라이브러리 · Helloworld Studio</title>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/quiple/galmuri/dist/galmuri.css" />
     <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="/src/library/library.css" />
   </head>
   <body>
     <header class="st-topbar">
       <div class="st-topbar-left">
-        <strong class="st-brand">🎬 컷씬</strong>
-        <input id="project-name" class="st-input st-input-title" type="text" value="새 컷씬" />
+        <strong class="st-brand">📚 Helloworld Studio · 라이브러리</strong>
       </div>
       <div class="st-topbar-right">
-        <a class="st-link" href="/library.html">📚 라이브러리</a>
-        <button id="btn-import" class="st-btn" type="button">📥 Import</button>
-        <button id="btn-export" class="st-btn st-btn-primary" type="button">💾 Export</button>
+        <button id="btn-logout" class="st-btn" type="button" title="비번 잊고 다시 입력">🔑 재로그인</button>
+        <a class="st-link st-link-primary" href="/filmmaker.html">🎬 필름메이커 →</a>
       </div>
     </header>
 
-    <!-- 모바일 전용 부유 토글 — 노치/Safari UI 위에 항상 떠 있어 가려지지 않음 -->
-    <button id="btn-toggle-bin"   class="st-fab st-fab-left"  type="button" aria-label="미디어 빈">📁</button>
-    <button id="btn-toggle-props" class="st-fab st-fab-right" type="button" aria-label="속성 패널">⚙️</button>
+    <main class="lib-main">
+      <div class="lib-tabs">
+        <button class="lib-tab lib-tab-active" data-cat="maps">🗺 맵</button>
+        <button class="lib-tab" data-cat="bgm">🎵 BGM</button>
+      </div>
 
-    <div class="st-body">
-      <!-- 좌: 미디어 빈 -->
-      <aside class="st-bin">
-        <div class="st-bin-tabs">
-          <button class="st-tab st-tab-active" data-tab="maps">🗺️ 맵</button>
-          <button class="st-tab" data-tab="chars">👤 캐릭터</button>
-          <button class="st-tab" data-tab="bgm">🎵 BGM</button>
-        </div>
-        <div class="st-bin-actions">
-          <button id="btn-upload" class="st-btn st-btn-ghost" type="button">📁 업로드</button>
-        </div>
-        <div id="bin-list" class="st-bin-list"></div>
-        <input id="bin-upload-input" type="file" class="hidden" />
-      </aside>
+      <div class="lib-upload-zone" id="upload-zone">
+        <input id="file-input" type="file" multiple class="hidden" />
+        <button id="btn-pick" class="st-btn st-btn-primary" type="button">📁 파일 선택</button>
+        <span class="lib-upload-hint">또는 여기로 드래그&드롭</span>
+      </div>
 
-      <!-- 중: 프리뷰 + 트랜스포트 -->
-      <section class="st-stage">
-        <div class="st-scene-tabs" id="scene-tabs"></div>
-        <div class="st-preview-wrap">
-          <canvas id="stage-canvas"></canvas>
-          <div class="st-preview-hud">
-            <span id="hud-time">0.00s / 0.00s</span>
-            <span id="hud-record" class="st-hud-rec hidden">● REC</span>
-          </div>
-          <!-- 가상 조이스틱 — 트랙 활성화(armed)면 표시. 캐릭터는 캐릭터를, 카메라는 카메라를 조종 -->
-          <div id="touch-stick" class="st-stick hidden" aria-hidden="true">
-            <div id="touch-stick-knob" class="st-stick-knob"></div>
-          </div>
-          <!-- 카메라 줌 컨트롤 — armedTrackId === '__camera__' 일 때만 표시 -->
-          <div id="cam-zoom-ctrl" class="st-cam-zoom hidden">
-            <button id="cam-zoom-in"  type="button" aria-label="줌 인">＋</button>
-            <button id="cam-zoom-out" type="button" aria-label="줌 아웃">－</button>
-          </div>
-        </div>
-        <div class="st-transport">
-          <button id="tp-prev" class="st-btn st-tp" type="button" title="처음으로">⏮</button>
-          <button id="tp-play" class="st-btn st-tp st-tp-play" type="button" title="재생/정지 (Space)">⏵</button>
-          <button id="tp-rec" class="st-btn st-tp st-tp-rec" type="button" title="녹화 (R)">⏺</button>
-          <input id="tp-scrub" class="st-scrub" type="range" min="0" max="1000" value="0" />
-          <span id="tp-time" class="st-tp-time">0.00 / 0.00</span>
-          <span class="st-tp-spacer"></span>
-          <label class="st-tp-zoom" title="카메라 줌">
-            🔍 <input id="tp-zoom" type="range" min="50" max="400" value="100" />
-            <span id="tp-zoom-val">1.0x</span>
-          </label>
-          <button id="tp-cam-key" class="st-btn" type="button" title="현재 카메라 상태를 키프레임으로 추가">📍 카메라 키</button>
-        </div>
-      </section>
+      <div class="lib-progress" id="upload-progress"></div>
 
-      <!-- 우: 속성 패널 -->
-      <aside class="st-props">
-        <div class="st-props-head">⚙️ 속성</div>
-        <div id="props-body" class="st-props-body">
-          <p class="st-props-empty">트랙·클립을 선택하면 속성이 여기에 표시됩니다.</p>
+      <ul class="lib-list" id="file-list">
+        <li class="lib-empty">로딩 중...</li>
+      </ul>
+    </main>
+
+    <!-- 비번 모달 -->
+    <div id="auth-modal" class="auth-modal hidden">
+      <div class="auth-box">
+        <h2>🔑 라이브러리 접근</h2>
+        <p>Vercel 환경변수 <code>STUDIO_PASSWORD</code> 에 설정한 비밀번호를 입력하세요.</p>
+        <input id="auth-input" type="password" placeholder="비밀번호" autocomplete="current-password" />
+        <div class="auth-actions">
+          <button id="auth-submit" class="st-btn st-btn-primary" type="button">입장</button>
         </div>
-      </aside>
+        <p id="auth-error" class="auth-error hidden"></p>
+      </div>
     </div>
 
-    <!-- 하: 타임라인 -->
-    <section class="st-timeline">
-      <div class="st-timeline-head">
-        <span class="st-timeline-title">⏱ 타임라인</span>
-        <button id="btn-add-char" class="st-btn" type="button">➕ 캐릭터 추가</button>
-        <button id="btn-add-bubble" class="st-btn" type="button">💬 말풍선 추가</button>
-        <button id="btn-add-scene" class="st-btn" type="button">🎞 씬 추가</button>
-        <span class="st-flex-spacer"></span>
-        <label class="st-tp-zoom">
-          ⏱ <input id="tl-zoom" type="range" min="20" max="400" value="100" />
-        </label>
-      </div>
-      <div class="st-timeline-body" id="timeline-body"></div>
-    </section>
-
-    <!-- 드로워 외곽 클릭 감지용 백드롭 (모바일 전용) -->
-    <div id="drawer-backdrop" class="st-drawer-backdrop hidden"></div>
     <div id="toast" class="st-toast hidden"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/library/main.ts"></script>
   </body>
 </html>
