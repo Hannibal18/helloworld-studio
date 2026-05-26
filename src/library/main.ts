@@ -1172,25 +1172,37 @@ async function loadImageAsync(url: string): Promise<HTMLImageElement> {
   });
 }
 
+/** Tiled main.json 안 tileset.source 가 사용자 작업환경 기준 상대경로(`../../..`) 일 수 있어,
+ *  같은 폴더 안 .tsj 로 강제 정규화. .tsx → .tsj 도 함께 변환 (extension 이 ZIP 에 .tsj 로 넣음). */
+function normalizeTilesetSource(source: string): string {
+  const lastSlash = source.lastIndexOf('/');
+  let basename = lastSlash >= 0 ? source.slice(lastSlash + 1) : source;
+  basename = basename.replace(/\.tsx$/i, '.tsj');
+  return basename;
+}
+
 async function resolveTilesets(map: TiledMap, mapUrl: string): Promise<TilesetResolved[]> {
   const out: TilesetResolved[] = [];
   for (const ts of map.tilesets) {
     let def: typeof ts & { source?: string } = ts;
     let baseForImage = mapUrl;
     if (ts.source) {
-      // 외부 tileset 참조 — fetch 해서 합침
-      const tsUrl = joinUrl(mapUrl, ts.source);
+      // 외부 tileset 참조 — source 정규화 (같은 폴더 안 basename.tsj) 후 fetch
+      const normalized = normalizeTilesetSource(ts.source);
+      const tsUrl = joinUrl(mapUrl, normalized);
       const r = await fetch(tsUrl, { cache: 'force-cache' });
-      if (!r.ok) throw new Error(`tileset fetch failed: ${ts.source}`);
+      if (!r.ok) throw new Error(`tileset fetch failed: ${normalized}`);
       const tsJson = await r.json() as typeof ts;
       def = { ...tsJson, firstgid: ts.firstgid };
       baseForImage = tsUrl;
     }
     if (!def.image) {
-      // image collection tileset — 이번 버전 미지원, skip
+      // image collection tileset — 이번 버전 미지원
       continue;
     }
-    const imgUrl = joinUrl(baseForImage, def.image);
+    // tileset 의 image 도 같은 폴더 안 basename 으로 정규화
+    const imgBasename = def.image.split('/').pop() ?? def.image;
+    const imgUrl = joinUrl(baseForImage, imgBasename);
     const img = await loadImageAsync(imgUrl);
     const tw = def.tilewidth ?? map.tilewidth;
     const th = def.tileheight ?? map.tileheight;
