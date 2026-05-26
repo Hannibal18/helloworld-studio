@@ -5,9 +5,9 @@
 //   { blobs: [{ pathname, url, size, uploadedAt }, ...] }
 
 import { list } from '@vercel/blob';
-import { checkAuth, unauthorized } from './_auth.js';
+import { checkAuth, unauthorized, parseUrl } from './_auth.js';
 
-export const config = { runtime: 'edge' };
+export const config = { runtime: 'nodejs' };
 
 export default async function handler(request: Request): Promise<Response> {
   if (request.method !== 'GET') {
@@ -15,7 +15,7 @@ export default async function handler(request: Request): Promise<Response> {
   }
   if (!checkAuth(request)) return unauthorized();
 
-  const url = new URL(request.url);
+  const url = parseUrl(request);
   const category = url.searchParams.get('category') ?? 'all';
   const prefix = category === 'all' ? '' : `${category}/`;
 
