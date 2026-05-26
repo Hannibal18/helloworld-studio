@@ -27,6 +27,14 @@ export async function verifyToken(token: string): Promise<boolean> {
   }
 }
 
+/** Chrome 의 password manager 가 페이지 안 다른 텍스트 input 들을 username
+ *  필드로 오인해서 "비밀번호 저장하시겠습니까?" 를 띄우는 것을 막기 위해,
+ *  인증이 끝났거나 필요 없으면 #auth-modal 전체를 DOM 에서 제거. */
+function removeAuthModalFromDom(): void {
+  const modal = document.getElementById('auth-modal');
+  if (modal) modal.remove();
+}
+
 /** 비번 모달 띄우고 정상 로그인 시 토큰 저장 + resolve. */
 export function promptAuth(): Promise<string> {
   return new Promise((resolve) => {
@@ -50,7 +58,7 @@ export function promptAuth(): Promise<string> {
       submit.textContent = '입장';
       if (ok) {
         setToken(v);
-        modal.classList.add('hidden');
+        removeAuthModalFromDom();
         resolve(v);
       } else {
         err.textContent = '비밀번호가 다르거나 서버 응답 실패';
@@ -66,6 +74,9 @@ export function promptAuth(): Promise<string> {
 /** 보장된 토큰을 반환 — 없으면 모달 띄움. 검증된 적 있는 토큰은 재검증 안 함 (빠른 부팅). */
 export async function ensureAuth(): Promise<string> {
   const cached = getToken();
-  if (cached) return cached;
+  if (cached) {
+    removeAuthModalFromDom();
+    return cached;
+  }
   return promptAuth();
 }
