@@ -543,6 +543,7 @@ async function ensureCharactersLoaded(): Promise<void> {
 function makeItem(it: BlobItem): HTMLElement {
   const li = document.createElement('li');
   li.className = 'lib-item';
+  li.dataset.pathname = it.pathname;
   const isChar = activeCat === 'characters' && it.pathname.toLowerCase().endsWith('.png');
 
   // 좌측: 캐릭터면 썸네일 캔버스, 아니면 확장자 라벨
@@ -637,6 +638,27 @@ function makeItem(it: BlobItem): HTMLElement {
   li.appendChild(meta);
   li.appendChild(del);
   return li;
+}
+
+/** 저장 직후 리스트 row 만 inline 업데이트 — 전체 refreshList 대신 사용.
+ *  메모리(*MetaByPath) 는 호출 전에 이미 새 값으로 set 되어 있다고 가정. */
+function updateListRowInline(pathname: string): void {
+  const li = document.querySelector(`.lib-item[data-pathname="${CSS.escape(pathname)}"]`);
+  if (!li) return;
+  const nm = li.querySelector('.name') as HTMLElement | null;
+  if (!nm) return;
+  if (pathname.startsWith('characters/')) {
+    const meta = charMetaByPath.get(pathname);
+    nm.textContent = meta?.name || charBaseName(pathname);
+    const body = li.querySelector('.body') as HTMLElement | null;
+    if (body) body.textContent = bodyLabel(meta?.body);
+  } else if (pathname.startsWith('maps/')) {
+    const meta = mapMetaByPath.get(pathname);
+    nm.textContent = meta?.name || shortName(pathname).replace(/\.[^.]+$/, '');
+  } else if (pathname.startsWith('bgm/')) {
+    const meta = audioMetaByPath.get(pathname);
+    nm.textContent = meta?.name || shortName(pathname).replace(/\.[^.]+$/, '');
+  }
 }
 
 function selectChar(it: BlobItem): void {
@@ -792,9 +814,9 @@ function renderDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {
         totalSize: meta?.totalSize,
       };
       charMetaByPath.set(it.pathname, newMeta);
+      updateListRowInline(it.pathname);
       showToast('Saved');
       saveBtn.textContent = 'Save';
-      refreshList();
     } catch (e) {
       const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
       showToast(msg, 'err');
@@ -934,9 +956,9 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
       const file = new File([body], metaName, { type: 'application/json' });
       await uploadAsset(token, 'maps', file);
       mapMetaByPath.set(it.pathname, newMeta);
+      updateListRowInline(it.pathname);
       showToast('Saved');
       saveBtn.textContent = 'Save';
-      refreshList();
     } catch (e) {
       const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
       showToast(msg, 'err');
@@ -1076,9 +1098,9 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
       const file = new File([body], metaName, { type: 'application/json' });
       await uploadAsset(token, 'bgm', file);
       audioMetaByPath.set(it.pathname, newMeta);
+      updateListRowInline(it.pathname);
       showToast('Saved');
       saveBtn.textContent = 'Save';
-      refreshList();
     } catch (e) {
       const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
       showToast(msg, 'err');
