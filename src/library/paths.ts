@@ -194,3 +194,61 @@ export function mapMetaFilenameFor(baseName: string): string {
 export function mapFolderPrefix(baseName: string): string {
   return `${MAP_PREFIX}/${baseName}/`;
 }
+
+// ── 맵 버전 history (디테일 패널의 "Upload new version" 으로 누적) ─────
+//
+// 같은 맵 이름에 새 ZIP 업로드 시:
+//   1) 기존 maps/<name>/original.zip 의 콘텐츠를
+//      maps/<name>/_history/<ISO-timestamp>.zip 으로 복사 (옛 버전 보존)
+//   2) 새 ZIP 풀어서 main.json/tilesets/original.zip/meta.json 덮어쓰기
+//   3) 옛 자산 자체(main.json 등)는 새 걸로 덮어써짐 — 복구는 _history 의 ZIP 으로.
+//
+// 디테일 패널은 _history 폴더 안 파일을 나열해서 사용자에게 보여 줌.
+
+export const MAP_HISTORY_DIR = '_history';
+
+export function mapHistoryPrefix(baseName: string): string {
+  return `${MAP_PREFIX}/${baseName}/${MAP_HISTORY_DIR}/`;
+}
+
+export function mapHistoryFilenameFor(baseName: string, isoTimestamp: string): string {
+  // ':' 는 일부 시스템에서 문제 — 안전한 문자만 (Z 끝나는 ISO 그대로 두되 ':' 만 '-' 로)
+  const safe = isoTimestamp.replace(/:/g, '-');
+  return `${baseName}/${MAP_HISTORY_DIR}/${safe}.zip`;
+}
+
+export function isMapHistoryPath(pathname: string): boolean {
+  return pathname.startsWith(MAP_PREFIX + '/') && pathname.includes(`/${MAP_HISTORY_DIR}/`);
+}
+
+// ── 자산 ID 생성 ──────────────────────────────────────────
+//
+// 폴더명(= ID)은 자산의 변하지 않는 정체성. 사용자가 입력한 표시 이름(meta.name)은
+// 자유롭게 변경 가능하지만, ID 는 첫 업로드 시점에 자동 생성된 후 절대 바뀌지 않는다.
+// 게임의 자산 매니페스트는 ID 로 자산을 참조한다.
+//
+// 생성 규칙: slug + '-' + 6자리 hex 랜덤. 예: 'waiting-room-a3f9e6'
+// slug 가 ASCII 로 비어 있으면 (예: 한글 이름) generic prefix 사용.
+
+export function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')   // diacritics 제거
+    .replace(/[^a-z0-9]+/g, '-')       // ASCII alnum 외엔 모두 '-'
+    .replace(/^-+|-+$/g, '')           // 양끝 '-' 제거
+    .slice(0, 24);                     // 너무 길면 자름
+}
+
+function shortRandomHex(): string {
+  const bytes = new Uint8Array(3);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** 자산 ID 생성 — slug + '-' + 6 hex. slug 가 빈 문자열이면 fallbackPrefix 사용. */
+export function generateAssetId(displayName: string, fallbackPrefix = 'asset'): string {
+  const slug = slugify(displayName);
+  const stem = slug || fallbackPrefix;
+  return `${stem}-${shortRandomHex()}`;
+}

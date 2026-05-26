@@ -26,7 +26,8 @@ import {
   isZipMapEntryPath, isMapEntryPath, mapEntryPathForSidecar,
   mapBaseName, mapMetaUrlForEntry,
   mapMainFilenameFor, mapSideFilenameFor, mapOriginalZipFilenameFor, mapMetaFilenameFor,
-  mapFolderPrefix,
+  mapFolderPrefix, isMapHistoryPath, mapHistoryFilenameFor,
+  generateAssetId,
   type CharFormat,
 } from './paths';
 
@@ -74,17 +75,17 @@ interface CharMeta {
 // pathname → 자산 메타 (캐릭터/맵/오디오 공용 — 카테고리별로 사용하는 필드만 채움).
 const charMetaByPath = new Map<string, CharMeta>();
 interface MapMeta {
+  /** 자산의 변하지 않는 정체성 (폴더명 = ID). 첫 업로드 시 자동 생성, 절대 변경 X.
+   *  옛 자산(이 필드가 없는)은 라이브러리가 폴더명을 fallback 으로 사용. */
+  id?: string;
+  /** 사용자에게 표시되는 자유 이름 — 자유롭게 변경 가능. */
   name?: string;
   fields?: Record<string, string>;
   // ZIP 맵 전용 (legacy 단일 .json 맵은 'single' 또는 undefined).
   format?: 'single' | 'zip';
-  /** ZIP 안 메인 맵의 원본 파일 이름 (e.g. 'cops_lobby.tmj'). main.json 으로 정규화 후 추적 용도. */
   originalMapFilename?: string;
-  /** 원본 ZIP URL — 다운로드 버튼이 이걸 가리킴. */
   originalZipUrl?: string;
-  /** 폴더 안 모든 파일 합산 사이즈. */
   totalSize?: number;
-  /** 통계 (width × height 등 — JSON 파싱 결과). */
   info?: {
     width?: number; height?: number; tilewidth?: number; tileheight?: number;
     layers?: number; tilesets?: string[];
@@ -326,10 +327,13 @@ async function refreshList(): Promise<void> {
         }
       }
     } else if (activeCat === 'maps') {
-      // 맵: 대표(legacy .json 또는 ZIP /main.json) 만 items. 그 외 사이드 파일은 숨김.
+      // 맵: 대표(legacy .json 또는 ZIP /main.json) 만 items. 사이드 파일/history 백업은 숨김.
       for (const it of all) {
         if (isMapEntryPath(it.pathname)) items.push(it);
-        else if (it.pathname.endsWith('.meta.json') || it.pathname.endsWith('/meta.json')) sidecars.push(it);
+        else if (
+          (it.pathname.endsWith('.meta.json') || it.pathname.endsWith('/meta.json'))
+          && !isMapHistoryPath(it.pathname)
+        ) sidecars.push(it);
       }
       for (const it of all) {
         const m = /^maps\/([^/]+)\//.exec(it.pathname);
@@ -1015,16 +1019,20 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
   });
 
   // 통계 — ZIP 맵은 meta.info 에 이미 있음. legacy 면 JSON 직접 fetch.
+  // 자산 ID — 폴더명 또는 meta.id (둘 다 같아야 정상). 사용자에게 보여 줘서 게임 manifest 작성에 쓸 수 있게.
+  const assetId = meta?.id ?? (isZipMap ? mapBaseName(it.pathname) : baseName);
+
   const renderStats = (info: NonNullable<MapMeta['info']> | null): void => {
-    if (!info) {
-      statsEl.innerHTML = '<div class="stat-key">format</div><div class="stat-val">not-a-tiled-map</div>';
-      return;
-    }
     const rows: Array<[string, string]> = [];
-    if (info.width && info.height) rows.push(['size (tiles)', `${info.width} × ${info.height}`]);
-    if (info.tilewidth && info.tileheight) rows.push(['tile', `${info.tilewidth} × ${info.tileheight}`]);
-    if (info.layers != null) rows.push(['layers', String(info.layers)]);
-    if (info.tilesets?.length) rows.push(['tilesets', info.tilesets.join(', ')]);
+    rows.push(['id', assetId]);
+    if (info) {
+      if (info.width && info.height) rows.push(['size (tiles)', `${info.width} × ${info.height}`]);
+      if (info.tilewidth && info.tileheight) rows.push(['tile', `${info.tilewidth} × ${info.tileheight}`]);
+      if (info.layers != null) rows.push(['layers', String(info.layers)]);
+      if (info.tilesets?.length) rows.push(['tilesets', info.tilesets.join(', ')]);
+    } else {
+      rows.push(['format', 'not-a-tiled-map']);
+    }
     statsEl.innerHTML = '';
     for (const [k, v] of rows) {
       const a = document.createElement('div'); a.className = 'stat-key'; a.textContent = k;
@@ -1097,6 +1105,143 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
       saveBtn.disabled = false;
     }
   };
+
+  // ── 버전 업로드 + history (ZIP 맵만 지원) ───────────────────────────────
+  const versionBtn = document.getElementById('map-upload-version') as HTMLButtonElement | null;
+  const versionInput = document.getElementById('map-version-input') as HTMLInputElement | null;
+  const historyHost = document.getElementById('map-history');
+  if (versionBtn && versionInput && historyHost) {
+    if (isZipMap) {
+      versionBtn.style.display = '';
+      versionBtn.onclick = () => versionInput.click();
+      versionInput.onchange = (): void => {
+        const f = versionInput.files?.[0];
+        versionInput.value = '';
+        if (!f) return;
+        void uploadMapNewVersion(it, baseName, f);
+      };
+      // history 목록 — _history/*.zip 들 fetch
+      void renderMapHistory(historyHost, baseName);
+    } else {
+      versionBtn.style.display = 'none';
+      historyHost.innerHTML = '';
+    }
+  }
+}
+
+async function renderMapHistory(host: HTMLElement, baseName: string): Promise<void> {
+  host.innerHTML = '<div class="lib-detail-empty">Loading history…</div>';
+  try {
+    const all = await listAssets(token, 'maps');
+    const prefix = `${mapFolderPrefix(baseName)}_history/`;
+    const items = all
+      .filter((b) => b.pathname.startsWith(prefix) && b.pathname.endsWith('.zip'))
+      .sort((a, b) => b.pathname.localeCompare(a.pathname));  // 최신 순
+    if (items.length === 0) {
+      host.innerHTML = '<div class="lib-detail-empty">No previous versions yet.</div>';
+      return;
+    }
+    host.innerHTML = '';
+    for (const b of items) {
+      const row = document.createElement('div');
+      row.className = 'lib-detail-history-row';
+      // pathname 의 timestamp 부분 추출
+      const fn = b.pathname.slice(prefix.length).replace(/\.zip$/, '');
+      const restored = fn.replace(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/, '$1-$2-$3 $4:$5:$6');
+      const ts = document.createElement('span'); ts.className = 'h-ts'; ts.textContent = restored;
+      const sz = document.createElement('span'); sz.className = 'h-size'; sz.textContent = fmtSize(b.size);
+      const dl = document.createElement('a'); dl.className = 'st-btn';
+      dl.textContent = '⬇'; dl.href = b.url; dl.setAttribute('download', `${baseName}-${fn}.zip`);
+      dl.title = 'Download this version';
+      row.appendChild(ts); row.appendChild(sz); row.appendChild(dl);
+      host.appendChild(row);
+    }
+  } catch (e) {
+    host.innerHTML = `<div class="lib-detail-empty">Failed to load: ${(e as Error).message}</div>`;
+  }
+}
+
+/** ZIP 맵의 새 버전 업로드.
+ *  1) 기존 original.zip 내용을 _history/<ISO>.zip 으로 복사 (옛 버전 보존)
+ *  2) 새 ZIP 풀어서 main.json/sides/original.zip/meta.json 덮어쓰기
+ *  Vercel Blob 의 server-side copy API 가 없어서 1) 은 download → reupload. */
+async function uploadMapNewVersion(currentEntry: BlobItem, baseName: string, newZip: File): Promise<void> {
+  const progress = appendProgressRow(`${baseName} — new version`);
+
+  const run = async (): Promise<void> => {
+    progress.setStage(`${baseName} — parsing ZIP`);
+    progress.setPercent(0);
+    let parsed: ParsedMapZip;
+    try {
+      parsed = await parseMapZip(newZip);
+    } catch (e) {
+      progress.failure(`${baseName} — ${(e as Error).message}`, run);
+      return;
+    }
+    const totalFiles = 2 + 1 + parsed.sideFiles.length + 1; // history 백업(1) + main + sides + original + meta
+    let done = 0;
+    const tick = (): void => { done++; progress.setPercent(Math.round((done / totalFiles) * 100)); };
+
+    try {
+      // 1) 기존 original.zip 을 _history/<ISO>.zip 으로 보존
+      const meta = mapMetaByPath.get(currentEntry.pathname);
+      const existingOriginalUrl = meta?.originalZipUrl;
+      if (existingOriginalUrl) {
+        progress.setStage(`${baseName} — backing up current version`);
+        const r = await fetch(existingOriginalUrl, { cache: 'reload' });
+        if (!r.ok) throw new Error(`current original.zip fetch failed: ${r.status}`);
+        const buf = await r.arrayBuffer();
+        const isoTs = new Date().toISOString();
+        const histFile = new File([buf], mapHistoryFilenameFor(baseName, isoTs), { type: 'application/zip' });
+        await uploadAsset(token, 'maps', histFile);
+        tick();
+      } else {
+        // 기존 original.zip 이 없는 (구버전) 맵 — history 백업은 스킵
+        tick();
+      }
+      // 2) 새 ZIP 풀어서 같은 폴더에 덮어쓰기 (uploadAsset 은 allowOverwrite:true)
+      progress.setStage(`${baseName} — ${parsed.mapFilename}`);
+      const mainFile = new File([parsed.mapFile], mapMainFilenameFor(baseName), { type: 'application/json' });
+      await uploadAsset(token, 'maps', mainFile);
+      tick();
+      for (const side of parsed.sideFiles) {
+        progress.setStage(`${baseName} — ${side.name}`);
+        const out = new File([side], mapSideFilenameFor(baseName, side.name), { type: side.type });
+        await uploadAsset(token, 'maps', out);
+        tick();
+      }
+      progress.setStage(`${baseName} — original.zip`);
+      const origFile = new File([newZip], mapOriginalZipFilenameFor(baseName), { type: 'application/zip' });
+      const origBlob = await uploadAsset(token, 'maps', origFile);
+      const newOriginalZipUrl = origBlob.url;
+      tick();
+      // 3) meta.json — 기존 meta merge + originalMapFilename/info/originalZipUrl 갱신
+      progress.setStage(`${baseName} — metadata`);
+      const merged: MapMeta = {
+        ...(meta ?? {}),
+        format: 'zip',
+        originalMapFilename: parsed.mapFilename,
+        originalZipUrl: newOriginalZipUrl,
+        info: parsed.mapInfo,
+      };
+      const metaFile = new File(
+        [JSON.stringify({ schema: 1, ...merged, savedAt: new Date().toISOString() }, null, 2)],
+        mapMetaFilenameFor(baseName),
+        { type: 'application/json' },
+      );
+      await uploadAsset(token, 'maps', metaFile);
+      tick();
+      progress.success(`${baseName} — new version uploaded`);
+      // 디테일 패널을 새로 그려 미리보기/통계/history 갱신
+      refreshList();
+    } catch (e) {
+      if (e instanceof AuthError) clearToken();
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      progress.failure(`${baseName} — ${msg}`, run);
+    }
+  };
+
+  await run();
 }
 
 function drawMapPlaceholder(canvas: HTMLCanvasElement): void {
@@ -2422,9 +2567,10 @@ async function uploadMapZipWithModal(zipFile: File): Promise<void> {
       if (!parsed) return;
       const raw = nameInput.value.trim();
       if (!raw || isMapNameTaken(raw)) { validate(); return; }
-      const cleaned = raw.replace(/[\/\\]/g, '_');
+      // 폴더명(=불변 ID) 은 사용자 입력과 무관하게 자동 생성. 사용자 입력은 meta.name 으로만.
+      const assetId = generateAssetId(raw, 'map');
       cleanup();
-      await uploadZipMap(parsed, cleaned, raw, zipFile);
+      await uploadZipMap(parsed, assetId, raw, zipFile);
     };
     submitBtn.onclick = () => { void doUpload(); };
     cancelBtn.onclick = cleanup;
@@ -2436,9 +2582,11 @@ async function uploadMapZipWithModal(zipFile: File): Promise<void> {
 }
 
 /** 맵 ZIP 의 메인+사이드+원본 ZIP+meta 를 maps/<base>/ 폴더로 풀어 업로드. */
+// baseName 매개변수는 자산의 ID 역할 (폴더명). 첫 업로드 시 generateAssetId() 결과.
 async function uploadZipMap(
-  parsed: ParsedMapZip, baseName: string, displayName: string, originalZip: File,
+  parsed: ParsedMapZip, assetId: string, displayName: string, originalZip: File,
 ): Promise<void> {
+  const baseName = assetId;  // 코드 안에서는 이미 baseName 으로 쓰던 변수 — alias 유지
   const totalFiles = 1 + parsed.sideFiles.length + 2; // main + sides + original.zip + meta
   const progress = appendProgressRow(displayName);
 
@@ -2480,6 +2628,7 @@ async function uploadZipMap(
       // 4) meta.json
       progress.setStage(`${displayName} — metadata`);
       const meta: MapMeta = {
+        id: assetId,
         name: displayName,
         format: 'zip',
         originalMapFilename: parsed.mapFilename,

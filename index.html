@@ -114,6 +114,13 @@
                 <a id="map-download" class="st-btn" type="button">⬇</a>
                 <button id="map-save" class="st-btn st-btn-primary" type="button" disabled>Save</button>
               </div>
+              <!-- 새 버전 업로드 — 같은 맵 이름 유지하면서 ZIP 만 교체. 옛 자산은 _history 에 보존. -->
+              <div class="lib-detail-version">
+                <div class="lib-detail-actions-title">Versions</div>
+                <input id="map-version-input" type="file" accept=".zip" class="hidden" />
+                <button id="map-upload-version" class="st-btn" type="button">Upload new version (zip)</button>
+                <div id="map-history" class="lib-detail-history"></div>
+              </div>
             </div>
           </div>
         </aside>

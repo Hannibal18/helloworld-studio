@@ -609,6 +609,32 @@ html, body {
 .lib-detail-actions {
   display: flex; flex-wrap: wrap; gap: 4px;
 }
+.lib-detail-version {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 4px;
+}
+.lib-detail-history {
+  display: flex; flex-direction: column; gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.lib-detail-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px; align-items: center;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.lib-detail-history-row .h-ts { color: var(--text); overflow-wrap: anywhere; }
+.lib-detail-history-row .h-size { color: var(--text-mute); }
+.lib-detail-history-row a.st-btn,
+.lib-detail-history-row button.st-btn {
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+}
 .lib-detail-actions button {
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
