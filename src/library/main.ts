@@ -927,21 +927,23 @@ function playAction(
   });
 }
 
-/** ZIP 캐릭터의 액션별 PNG 에서 재생. 프레임 사이즈는 PNG 높이로 자동 추정 (4 방향 가정, hurt/climb 만 1 방향). */
+/** ZIP 캐릭터의 액션별 PNG 에서 재생.
+ *  LPC 의 standard/<anim>.png 는 항상 SHEET_WIDTH(832) × (num*FRAME_SIZE) 로 추출되어
+ *  실제 cycle 보다 PNG 가 넓음. 표준 액션이면 ANIMATION_CONFIGS 의 cycle 을 그대로 사용해
+ *  빈 frame 을 건너뜀. custom/<anim>.png 는 정확히 cycle 폭으로 추출되므로 전체 순환. */
 function playFromAnimFile(actionName: string, url: string, canvas: HTMLCanvasElement): void {
   loadSheet(url, (img) => {
-    // 방향 수: hurt/climb 는 1 방향, 나머지는 4 방향. 명시 매핑 없으면 4 가정.
-    const oneRow = actionName === 'hurt' || actionName === 'climb';
-    const numRows = oneRow ? 1 : 4;
+    const cfg = ANIMATION_CONFIGS[actionName as LPCAction];
+    // 행 수 결정 — ANIMATION_CONFIGS 가 있으면 그 num, 없으면 4 (custom 은 거의 4 방향)
+    const numRows = cfg?.num ?? 4;
     const frameSize = Math.round(img.naturalHeight / numRows);
-    const cols = Math.max(1, Math.round(img.naturalWidth / frameSize));
-    // 4-방향이면 row 2 (down). 1-방향이면 row 0.
-    const row = oneRow ? 0 : 2;
-    // 사이클: walk 의 경우 idle col 0 제외하고 [1..cols-1] 가 원래 cycle 인데
-    // ZIP 의 walk.png 는 LPC 가 cycle 만 추출했을 가능성도 있음.
-    // 단순화: 전체 col 0..cols-1 순환 — LPC 가 의도한 cycle 그대로.
-    const cycle: number[] = [];
-    for (let i = 0; i < cols; i++) cycle.push(i);
+    const totalCols = Math.max(1, Math.round(img.naturalWidth / frameSize));
+    // 4-방향이면 row 2 (down). 1-방향(hurt/climb) 이면 row 0.
+    const row = numRows === 4 ? 2 : 0;
+    // cycle 결정 — 표준이면 정의된 cycle, 아니면 PNG 의 모든 col (custom 은 꽉 찬 추출)
+    const cycle: number[] = cfg ? cfg.cycle.slice() : (() => {
+      const a: number[] = []; for (let i = 0; i < totalCols; i++) a.push(i); return a;
+    })();
     const FPS = 8;
     let frame = 0; let lastT = 0;
     const ctx = canvas.getContext('2d')!;
@@ -952,7 +954,6 @@ function playFromAnimFile(actionName: string, url: string, canvas: HTMLCanvasEle
         ctx.imageSmoothingEnabled = false;
         ctx.fillStyle = '#0e1014';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        // 큰 무기는 frameSize=128 등이지만 캔버스에 맞춰 스케일링
         ctx.drawImage(img,
           col * frameSize, row * frameSize, frameSize, frameSize,
           0, 0, canvas.width, canvas.height);
