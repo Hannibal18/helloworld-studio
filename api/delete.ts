@@ -1,33 +1,25 @@
-// Blob 에서 파일 삭제.
+// Blob 파일 삭제.
 //   DELETE /api/delete?token=...
-//   body: { url: "https://...blob.vercel-storage.com/..." }
+//   body: { url }
 
 import { del } from '@vercel/blob';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { checkAuth, unauthorized, badRequest } from './_auth.js';
 
-export const config = { runtime: 'nodejs' };
-
-export default async function handler(request: Request): Promise<Response> {
-  if (request.method !== 'DELETE' && request.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405 });
+export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+  if (req.method !== 'DELETE' && req.method !== 'POST') {
+    res.status(405).end('Method Not Allowed');
+    return;
   }
-  if (!checkAuth(request)) return unauthorized();
+  if (!checkAuth(req)) { unauthorized(res); return; }
 
-  let body: { url?: string };
-  try {
-    body = await request.json();
-  } catch {
-    return badRequest('invalid json body');
-  }
-  if (!body.url) return badRequest('url required');
+  const body = req.body as { url?: string } | undefined;
+  if (!body || !body.url) { badRequest(res, 'url required'); return; }
 
   try {
     await del(body.url);
-    return Response.json({ ok: true });
+    res.status(200).json({ ok: true });
   } catch (e) {
-    return new Response(JSON.stringify({ error: (e as Error).message }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-    });
+    res.status(500).json({ error: (e as Error).message });
   }
 }

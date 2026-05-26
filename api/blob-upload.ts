@@ -1,32 +1,35 @@
 // Vercel Blob 클라이언트 업로드 핸들러.
-// 클라이언트(@vercel/blob/client 의 upload()) 가 이 엔드포인트로 토큰 요청 → 응답한 token 으로
+// @vercel/blob/client 의 upload() 가 이 엔드포인트로 토큰 요청 → 응답한 token 으로
 // 직접 Blob 으로 PUT. 큰 파일도 OK (Vercel Function body limit 회피).
 
 import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { checkAuth, unauthorized, badRequest } from './_auth.js';
 
-export const config = { runtime: 'nodejs' };
-
-export default async function handler(request: Request): Promise<Response> {
-  if (request.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405 });
+export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+  if (req.method !== 'POST') {
+    res.status(405).end('Method Not Allowed');
+    return;
   }
-  if (!checkAuth(request)) return unauthorized();
+  if (!checkAuth(req)) { unauthorized(res); return; }
 
-  let body: HandleUploadBody;
-  try {
-    body = (await request.json()) as HandleUploadBody;
-  } catch {
-    return badRequest('invalid json body');
-  }
+  const body = req.body as HandleUploadBody | undefined;
+  if (!body) { badRequest(res, 'body required'); return; }
 
   try {
+    // handleUpload 는 fetch Request 가 필요 — Node req 를 Request 로 어댑트.
+    const proto = (req.headers['x-forwarded-proto'] || 'https') as string;
+    const host = req.headers.host ?? 'localhost';
+    const fullUrl = `${proto}://${host}${req.url ?? '/api/blob-upload'}`;
+    const fetchReq = new Request(fullUrl, {
+      method: 'POST',
+      headers: req.headers as Record<string, string>,
+      body: JSON.stringify(body),
+    });
     const json = await handleUpload({
-      request,
+      request: fetchReq,
       body,
       onBeforeGenerateToken: async (pathname) => {
-        // pathname 형태: 'maps/foo.json' 또는 'bgm/track.mp3' 등.
-        // 확장자/카테고리 화이트리스트.
         const ext = pathname.split('.').pop()?.toLowerCase();
         const allowed = ['json', 'tmj', 'tsj', 'png', 'jpg', 'jpeg', 'mp3', 'ogg', 'wav', 'm4a'];
         if (!ext || !allowed.includes(ext)) {
@@ -38,7 +41,6 @@ export default async function handler(request: Request): Promise<Response> {
             'image/png', 'image/jpeg',
             'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/mp4', 'audio/x-m4a',
           ],
-          // 같은 이름 업로드 시 이전 파일 덮어쓰지 않고 -1, -2 suffix 자동 부여
           addRandomSuffix: false,
           tokenPayload: JSON.stringify({ pathname }),
         };
@@ -47,11 +49,8 @@ export default async function handler(request: Request): Promise<Response> {
         // 메타 DB 같은 거 필요하면 여기서. 현재 Blob list() 가 충분.
       },
     });
-    return Response.json(json);
+    res.status(200).json(json);
   } catch (e) {
-    return new Response(JSON.stringify({ error: (e as Error).message }), {
-      status: 400,
-      headers: { 'content-type': 'application/json' },
-    });
+    res.status(400).json({ error: (e as Error).message });
   }
 }
