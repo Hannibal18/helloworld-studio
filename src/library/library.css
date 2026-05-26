@@ -180,7 +180,21 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  /* 페이지 전체가 자연스럽게 스크롤 — sticky/max-height 안 씀. */
+  /* 패널 자체는 화면에 sticky — 페이지 스크롤 시 옆에 따라옴.
+   * 패널 내용이 길면 패널 안쪽에서만 스크롤 (페이지 스크롤은 리스트가 담당). */
+  position: sticky;
+  top: 14px;
+  max-height: calc(100vh - 28px);
+  overflow-y: auto;
+}
+/* 패널 안 상단의 미리보기(메인 + 4방향)는 패널 스크롤 시에도 위에 고정. */
+.lib-detail .lib-preview-stack {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+  padding-bottom: 8px;
+  margin-bottom: -8px;
 }
 .lib-detail-preview {
   width: 100%; height: auto;
