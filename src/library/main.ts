@@ -1008,8 +1008,11 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
     dlBtn.style.pointerEvents = '';
   }
 
-  // 미리보기 캔버스 — 일단 그리드 placeholder
+  // 미리보기 — 일단 placeholder, 그 다음 진짜 맵 렌더 시도. 실패 시 placeholder 유지.
   drawMapPlaceholder(previewC);
+  void renderMapPreview(previewC, it.url).catch(() => {
+    // 실패 시 placeholder 그대로 — 콘솔에만 알리고 사용자에겐 안 띄움
+  });
 
   // 통계 — ZIP 맵은 meta.info 에 이미 있음. legacy 면 JSON 직접 fetch.
   const renderStats = (info: NonNullable<MapMeta['info']> | null): void => {
@@ -1117,6 +1120,155 @@ function drawMapPlaceholder(canvas: HTMLCanvasElement): void {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText('MAP', w / 2, h / 2);
+}
+
+// ===== Map 실제 렌더 =====
+//
+// Tiled 의 main.json 을 받아 캔버스에 맵 픽셀을 그림. 캐릭터 ZIP 시트와 비슷한 흐름:
+// fetch JSON → 외부 .tsj tileset 들 fetch → tileset png 들 load → tile 별로 drawImage.
+// 실패하면 placeholder fallback (caller 가 try/catch).
+
+interface TilesetResolved {
+  firstgid: number;
+  tilewidth: number;
+  tileheight: number;
+  imagewidth: number;
+  imageheight: number;
+  columns: number;
+  img: HTMLImageElement;
+}
+
+interface TiledMap {
+  width: number;          // 가로 타일 수
+  height: number;         // 세로 타일 수
+  tilewidth: number;
+  tileheight: number;
+  layers: Array<{
+    type: string;
+    visible?: boolean;
+    data?: number[] | string;
+    width?: number;
+    height?: number;
+  }>;
+  tilesets: Array<{ firstgid: number; source?: string; image?: string; tilewidth?: number; tileheight?: number; imagewidth?: number; imageheight?: number; columns?: number }>;
+}
+
+// flip flag 비트 (Tiled 가 tile id 의 상위 비트에 인코딩) — 우리는 무시하고 id 만.
+const TILE_ID_MASK = 0x1fffffff;
+
+let mapPreviewToken = 0;
+
+function joinUrl(baseUrl: string, relative: string): string {
+  try { return new URL(relative, baseUrl).href; } catch { return relative; }
+}
+
+async function loadImageAsync(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = (e) => reject(e);
+    img.src = url;
+  });
+}
+
+async function resolveTilesets(map: TiledMap, mapUrl: string): Promise<TilesetResolved[]> {
+  const out: TilesetResolved[] = [];
+  for (const ts of map.tilesets) {
+    let def: typeof ts & { source?: string } = ts;
+    let baseForImage = mapUrl;
+    if (ts.source) {
+      // 외부 tileset 참조 — fetch 해서 합침
+      const tsUrl = joinUrl(mapUrl, ts.source);
+      const r = await fetch(tsUrl, { cache: 'force-cache' });
+      if (!r.ok) throw new Error(`tileset fetch failed: ${ts.source}`);
+      const tsJson = await r.json() as typeof ts;
+      def = { ...tsJson, firstgid: ts.firstgid };
+      baseForImage = tsUrl;
+    }
+    if (!def.image) {
+      // image collection tileset — 이번 버전 미지원, skip
+      continue;
+    }
+    const imgUrl = joinUrl(baseForImage, def.image);
+    const img = await loadImageAsync(imgUrl);
+    const tw = def.tilewidth ?? map.tilewidth;
+    const th = def.tileheight ?? map.tileheight;
+    const iw = def.imagewidth ?? img.naturalWidth;
+    const ih = def.imageheight ?? img.naturalHeight;
+    const cols = def.columns ?? Math.floor(iw / tw);
+    out.push({
+      firstgid: def.firstgid,
+      tilewidth: tw, tileheight: th,
+      imagewidth: iw, imageheight: ih,
+      columns: cols, img,
+    });
+  }
+  // firstgid 오름차순으로 (gid 매칭 위해)
+  out.sort((a, b) => a.firstgid - b.firstgid);
+  return out;
+}
+
+function findTilesetForGid(tilesets: TilesetResolved[], gid: number): TilesetResolved | null {
+  let best: TilesetResolved | null = null;
+  for (const ts of tilesets) {
+    if (ts.firstgid <= gid && (!best || ts.firstgid > best.firstgid)) best = ts;
+  }
+  return best;
+}
+
+async function renderMapPreview(canvas: HTMLCanvasElement, mapUrl: string): Promise<void> {
+  const myToken = ++mapPreviewToken;
+  const r = await fetch(mapUrl, { cache: 'reload' });
+  if (!r.ok) throw new Error(`map fetch failed: ${r.status}`);
+  const map = await r.json() as TiledMap;
+  if (myToken !== mapPreviewToken) return;  // 사이에 다른 맵 선택 — 그리지 않음
+
+  const tilesets = await resolveTilesets(map, mapUrl);
+  if (myToken !== mapPreviewToken) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // 맵 픽셀 크기 → 캔버스 안에 맞춰 스케일 + 중앙 정렬
+  const pixelW = map.width * map.tilewidth;
+  const pixelH = map.height * map.tileheight;
+  const scale = Math.min(canvas.width / pixelW, canvas.height / pixelH);
+  const offX = (canvas.width - pixelW * scale) / 2;
+  const offY = (canvas.height - pixelH * scale) / 2;
+
+  ctx.save();
+  ctx.translate(offX, offY);
+  ctx.scale(scale, scale);
+
+  for (const layer of map.layers) {
+    if (layer.type !== 'tilelayer') continue;
+    if (layer.visible === false) continue;
+    const data = layer.data;
+    if (!Array.isArray(data)) continue;  // base64+zlib 등은 이 버전에선 지원 X
+    const lw = layer.width ?? map.width;
+    const lh = layer.height ?? map.height;
+    for (let i = 0; i < lw * lh; i++) {
+      const raw = data[i];
+      if (!raw) continue;
+      const gid = (raw >>> 0) & TILE_ID_MASK;
+      const ts = findTilesetForGid(tilesets, gid);
+      if (!ts) continue;
+      const localId = gid - ts.firstgid;
+      const sx = (localId % ts.columns) * ts.tilewidth;
+      const sy = Math.floor(localId / ts.columns) * ts.tileheight;
+      const dx = (i % lw) * map.tilewidth;
+      const dy = Math.floor(i / lw) * map.tileheight;
+      ctx.drawImage(
+        ts.img, sx, sy, ts.tilewidth, ts.tileheight,
+        dx, dy, ts.tilewidth, ts.tileheight,
+      );
+    }
+  }
+  ctx.restore();
 }
 
 // ===== Audio detail =====
