@@ -5,7 +5,7 @@
 //   { blobs: [{ pathname, url, size, uploadedAt }, ...] }
 
 import { list } from '@vercel/blob';
-import { checkAuth, unauthorized } from './_auth';
+import { checkAuth, unauthorized } from './_auth.js';
 
 export const config = { runtime: 'nodejs' };
 

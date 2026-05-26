@@ -3,7 +3,7 @@
 //   body: { url: "https://...blob.vercel-storage.com/..." }
 
 import { del } from '@vercel/blob';
-import { checkAuth, unauthorized, badRequest } from './_auth';
+import { checkAuth, unauthorized, badRequest } from './_auth.js';
 
 export const config = { runtime: 'nodejs' };
 

@@ -3,7 +3,7 @@
 // 직접 Blob 으로 PUT. 큰 파일도 OK (Vercel Function body limit 회피).
 
 import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
-import { checkAuth, unauthorized, badRequest } from './_auth';
+import { checkAuth, unauthorized, badRequest } from './_auth.js';
 
 export const config = { runtime: 'nodejs' };
 
