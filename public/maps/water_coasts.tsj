@@ -1,0 +1,14 @@
+{ "columns":23,
+ "image":"water_coasts_x2.png",
+ "imageheight":1952,
+ "imagewidth":736,
+ "margin":0,
+ "name":"water_coasts",
+ "spacing":0,
+ "tilecount":1403,
+ "tiledversion":"1.12.1",
+ "tileheight":32,
+ "tilewidth":32,
+ "type":"tileset",
+ "version":"1.10"
+}

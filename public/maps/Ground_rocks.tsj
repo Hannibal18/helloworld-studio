@@ -1,0 +1,14 @@
+{ "columns":26,
+ "image":"Ground_rocks_x2.png",
+ "imageheight":2784,
+ "imagewidth":832,
+ "margin":0,
+ "name":"Ground_rocks",
+ "spacing":0,
+ "tilecount":2262,
+ "tiledversion":"1.12.1",
+ "tileheight":32,
+ "tilewidth":32,
+ "type":"tileset",
+ "version":"1.10"
+}
