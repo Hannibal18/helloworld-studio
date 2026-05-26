@@ -198,9 +198,11 @@ html, body {
   top: var(--lib-gap);
   /* 위/아래로 같은 간격을 두기 위해 viewport 높이에서 양쪽 offset 만큼 뺌. */
   max-height: calc(100dvh - 2 * var(--lib-gap));
+  overflow-x: hidden;
   overflow-y: auto;
   /* grid cell 의 위쪽에서 자기 높이만큼만 — cell 안 빈 영역은 sticky 가 stick 할 공간. */
   align-self: start;
+  min-width: 0;
 }
 /* 패널 안 상단의 미리보기(메인 + 4방향)는 패널 스크롤 시에도 위에 고정. */
 .lib-detail .lib-preview-stack {
@@ -339,7 +341,9 @@ html, body {
 /* Maps detail — 통계 표 */
 .lib-detail-stats {
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* key 컬럼은 contents 크기, value 는 남은 공간(=panel 가로폭 만큼)을 1fr 로 잡되
+   * minmax(0,...) 로 자식 내용에 의해 컬럼이 늘어나지 않게 강제. */
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 2px 12px;
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
@@ -349,9 +353,16 @@ html, body {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  min-width: 0;
 }
 .lib-detail-stats .stat-key { color: var(--text-mute); }
-.lib-detail-stats .stat-val { color: var(--text); }
+.lib-detail-stats .stat-val {
+  color: var(--text);
+  /* 긴 값(쉼표로 구분된 tileset 목록 등) 이 패널 폭 초과하지 않게 줄바꿈. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 
 /* Audio player wrapper — 기본 컨트롤 사용 */
 .lib-audio-player {
