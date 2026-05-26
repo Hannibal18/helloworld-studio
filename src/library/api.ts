@@ -11,7 +11,7 @@ export interface BlobItem {
 }
 
 /** 카테고리별 목록 조회. */
-export async function listAssets(token: string, category: 'maps' | 'bgm' | 'all'): Promise<BlobItem[]> {
+export async function listAssets(token: string, category: 'maps' | 'characters' | 'bgm' | 'all'): Promise<BlobItem[]> {
   const r = await fetch(`/api/list?category=${category}`, {
     headers: { 'x-studio-token': token },
   });
@@ -24,7 +24,7 @@ export async function listAssets(token: string, category: 'maps' | 'bgm' | 'all'
 /** 클라이언트 사이드 업로드 — 토큰은 핸들러 URL 쿼리로 전달. */
 export async function uploadAsset(
   token: string,
-  category: 'maps' | 'bgm',
+  category: 'maps' | 'characters' | 'bgm',
   file: File,
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<BlobItem> {

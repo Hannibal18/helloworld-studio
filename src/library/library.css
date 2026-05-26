@@ -137,6 +137,28 @@
 }
 .lib-item .del:hover { color: var(--rec); background: rgba(196, 99, 74, 0.08); }
 
+/* 액션 태그 (캐릭터 카테고리) */
+.lib-tags {
+  display: flex; flex-wrap: wrap; gap: 3px;
+  margin-top: 4px;
+}
+.lib-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.02em;
+}
+.lib-tag-muted {
+  color: var(--text-mute);
+  background: transparent;
+  border-style: dashed;
+}
+
 /* 인증 모달 */
 .auth-modal {
   position: fixed; inset: 0;

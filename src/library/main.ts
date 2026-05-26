@@ -1,21 +1,26 @@
 // 라이브러리 페이지 부트스트랩 + UI 로직.
 //   - 비번 모달 → ensureAuth → 토큰 보유
-//   - Maps / BGM 탭 전환 + 카테고리별 목록 갱신
+//   - Maps / Characters / Audio 탭 전환
 //   - 드래그&드롭 / 파일 선택 업로드 (다중 파일)
-//   - 진행률 표시 + 완료/실패 토스트
-//   - 항목 삭제
+//   - 캐릭터는 업로드 시 LPC 액션 자동 검출 → sidecar .meta.json 함께 저장
+//   - 진행률 표시 + 항목 삭제
 
 import { ensureAuth, clearToken } from './auth';
 import { listAssets, uploadAsset, deleteAsset, AuthError, type BlobItem } from './api';
+import { detectActionsFromFile, ANIMATION_CONFIGS, type LPCAction } from './lpc-detect';
 
-type Category = 'maps' | 'bgm';
+type Category = 'maps' | 'characters' | 'bgm';
 const EXT_BY_CAT: Record<Category, string[]> = {
-  maps: ['json', 'tmj', 'tsj', 'png', 'jpg', 'jpeg'],
-  bgm:  ['mp3', 'ogg', 'wav', 'm4a'],
+  maps:       ['json', 'tmj', 'tsj', 'png', 'jpg', 'jpeg'],
+  characters: ['png'],
+  bgm:        ['mp3', 'ogg', 'wav', 'm4a'],
 };
 
 let token = '';
 let activeCat: Category = 'maps';
+
+// pathname → 검출된 액션 목록. sidecar 메타에서 채우고 리스트 렌더 시 참조.
+const actionsByPath = new Map<string, LPCAction[]>();
 
 function showToast(msg: string, kind: 'ok' | 'err' = 'ok', ms = 2200): void {
   const el = document.getElementById('toast');
@@ -42,19 +47,46 @@ function extLabel(pathname: string): string {
   return ext.toUpperCase();
 }
 
+function emptyLabel(cat: Category): string {
+  if (cat === 'maps') return 'maps';
+  if (cat === 'characters') return 'characters';
+  return 'audio';
+}
+
 async function refreshList(): Promise<void> {
   const list = document.getElementById('file-list')!;
-  list.innerHTML = '<li class="lib-empty">로딩 중...</li>';
+  list.innerHTML = '<li class="lib-empty">Loading…</li>';
   try {
-    const items = await listAssets(token, activeCat);
+    const all = await listAssets(token, activeCat);
+
+    // sidecar .meta.json 파일을 본문 아이템에서 제외하고, 페어 메타로 가져옴
+    const items: BlobItem[] = [];
+    const sidecars: BlobItem[] = [];
+    for (const it of all) {
+      if (it.pathname.endsWith('.meta.json')) sidecars.push(it);
+      else items.push(it);
+    }
+
+    // 캐릭터 카테고리면 sidecar JSON 을 병렬로 읽어 actionsByPath 채움
+    if (activeCat === 'characters' && sidecars.length > 0) {
+      await Promise.all(sidecars.map(async (s) => {
+        try {
+          const r = await fetch(s.url);
+          if (!r.ok) return;
+          const j = await r.json() as { actions?: LPCAction[] };
+          // sidecar pathname: characters/name.meta.json → 페어 PNG pathname 추정
+          const pngPath = s.pathname.replace(/\.meta\.json$/, '.png');
+          if (Array.isArray(j.actions)) actionsByPath.set(pngPath, j.actions);
+        } catch { /* 무시 */ }
+      }));
+    }
+
     if (items.length === 0) {
-      list.innerHTML = `<li class="lib-empty">No ${activeCat === 'maps' ? 'maps' : 'audio'} yet. Upload above.</li>`;
+      list.innerHTML = `<li class="lib-empty">No ${emptyLabel(activeCat)} yet. Upload above.</li>`;
       return;
     }
     list.innerHTML = '';
-    for (const it of items) {
-      list.appendChild(makeItem(it));
-    }
+    for (const it of items) list.appendChild(makeItem(it));
   } catch (e) {
     if (e instanceof AuthError) {
       clearToken();
@@ -78,12 +110,39 @@ function makeItem(it: BlobItem): HTMLElement {
   sub.className = 'sub';
   sub.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   meta.appendChild(nm); meta.appendChild(sub);
+
+  // 캐릭터면 검출된 액션을 태그 행으로 표시
+  if (activeCat === 'characters') {
+    const actions = actionsByPath.get(it.pathname);
+    const tags = document.createElement('div');
+    tags.className = 'lib-tags';
+    if (actions && actions.length > 0) {
+      for (const a of actions) {
+        const tag = document.createElement('span');
+        tag.className = 'lib-tag';
+        tag.textContent = ANIMATION_CONFIGS[a]?.label ?? a;
+        tags.appendChild(tag);
+      }
+    } else {
+      const muted = document.createElement('span');
+      muted.className = 'lib-tag lib-tag-muted';
+      muted.textContent = 'no metadata';
+      tags.appendChild(muted);
+    }
+    meta.appendChild(tags);
+  }
+
   const del = document.createElement('button');
   del.className = 'del'; del.textContent = '×'; del.title = 'Delete';
   del.addEventListener('click', async () => {
     if (!confirm(`Delete "${shortName(it.pathname)}"?`)) return;
     try {
       await deleteAsset(token, it.url);
+      // 캐릭터면 사이드카도 함께 삭제 (실패는 무시)
+      if (activeCat === 'characters') {
+        const metaUrl = it.url.replace(/\.png$/i, '.meta.json');
+        try { await deleteAsset(token, metaUrl); } catch { /* 무시 */ }
+      }
       showToast('Deleted');
       refreshList();
     } catch (e) {
@@ -111,23 +170,51 @@ async function handleFiles(files: FileList | File[]): Promise<void> {
     progressEl.appendChild(row);
     const bar = row.querySelector('.bar > div') as HTMLDivElement;
     const pct = row.querySelector('.pct') as HTMLSpanElement;
+    const nameEl = row.querySelector('.name')!;
+
     try {
+      // 캐릭터면 업로드 전에 LPC 액션 검출
+      let detectedActions: LPCAction[] | null = null;
+      if (activeCat === 'characters') {
+        nameEl.textContent = `${f.name} — analyzing…`;
+        const det = await detectActionsFromFile(f);
+        if (!det.standard) {
+          throw new Error(`Not a standard 832×3456 LPC sheet (got ${det.width}×${det.height})`);
+        }
+        detectedActions = det.actions;
+        nameEl.textContent = `${f.name} · ${detectedActions.length} actions detected`;
+      }
+
+      // PNG (또는 일반 파일) 업로드
       await uploadAsset(token, activeCat, f, (loaded, total) => {
         const p = total > 0 ? Math.round((loaded / total) * 100) : 0;
         bar.style.width = p + '%';
         pct.textContent = p + '%';
       });
+
+      // 캐릭터면 sidecar JSON 도 업로드
+      if (activeCat === 'characters' && detectedActions) {
+        const metaName = f.name.replace(/\.[^.]+$/, '') + '.meta.json';
+        const metaBody = JSON.stringify({
+          schema: 1,
+          source: 'lpc',
+          actions: detectedActions,
+          detectedAt: new Date().toISOString(),
+        }, null, 2);
+        const metaFile = new File([metaBody], metaName, { type: 'application/json' });
+        await uploadAsset(token, activeCat, metaFile);
+      }
+
       row.classList.add('ok');
       pct.textContent = 'OK';
     } catch (e) {
       row.classList.add('err');
       pct.textContent = 'ERR';
       const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
-      row.querySelector('.name')!.textContent = `${f.name} — ${msg}`;
+      nameEl.textContent = `${f.name} — ${msg}`;
       if (e instanceof AuthError) { clearToken(); }
     }
-    // 4초 후 행 제거
-    setTimeout(() => row.remove(), 4000);
+    setTimeout(() => row.remove(), 5000);
   }
   refreshList();
 }
