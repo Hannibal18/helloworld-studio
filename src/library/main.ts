@@ -77,7 +77,7 @@ const charMetaByPath = new Map<string, CharMeta>();
 interface MapVersionRecord {
   version: number;
   savedAt: string;              // ISO — _history/<ts>.zip 의 timestamp 와 일치
-  originalMapFilename: string;  // 업로드 당시 ZIP 안 메인 맵 파일 이름 (e.g. 'cops_lobby.tmj')
+  originalMapFilename: string;  // 사용자가 업로드한 파일 이름 그대로 (e.g. 'waitingroom.zip')
 }
 
 interface MapMeta {
@@ -1407,7 +1407,7 @@ async function uploadMapNewVersion(currentEntry: BlobItem, baseName: string, new
         versionHistory: newHistory,
         savedAt: new Date().toISOString(),
         format: 'zip',
-        originalMapFilename: parsed.mapFilename,
+        originalMapFilename: newZip.name,
         originalZipUrl: newOriginalZipUrl,
         info: parsed.mapInfo,
       };
@@ -2879,7 +2879,7 @@ async function uploadZipMap(
         versionHistory: [],
         savedAt: new Date().toISOString(),
         format: 'zip',
-        originalMapFilename: parsed.mapFilename,
+        originalMapFilename: originalZip.name,
         originalZipUrl,
         info: parsed.mapInfo,
       };
