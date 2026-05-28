@@ -217,6 +217,13 @@ export function mapHistoryFilenameFor(baseName: string, isoTimestamp: string): s
   return `${baseName}/${MAP_HISTORY_DIR}/${safe}.zip`;
 }
 
+/** mapeditor 포맷 (단일 main.json) 의 history 백업 파일명 — .json 확장자.
+ *  Tiled 의 ZIP 백업과 같은 _history/ 디렉토리에 공존 (sync-assets 가 _history/ 통째로 제외). */
+export function mapHistoryJsonFilenameFor(baseName: string, isoTimestamp: string): string {
+  const safe = isoTimestamp.replace(/:/g, '-');
+  return `${baseName}/${MAP_HISTORY_DIR}/${safe}.json`;
+}
+
 export function isMapHistoryPath(pathname: string): boolean {
   return pathname.startsWith(MAP_PREFIX + '/') && pathname.includes(`/${MAP_HISTORY_DIR}/`);
 }

@@ -13,6 +13,7 @@ import {
 } from './lpc-detect';
 import { parseLpcZip, isLpcZipFile, type ParsedLpcZip } from './lpc-zip';
 import { parseMapZip, isMapZipFile, type ParsedMapZip } from './map-zip';
+import { tryParseMapeditorJson, type ParsedMapeditorJson } from './mapeditor-json';
 import {
   schemasByCategory, loadAllSchemas, saveSchema,
   type FieldDef, type FieldType, type SchemaCat,
@@ -26,7 +27,7 @@ import {
   isZipMapEntryPath, isMapEntryPath, mapEntryPathForSidecar,
   mapBaseName, mapMetaUrlForEntry,
   mapMainFilenameFor, mapSideFilenameFor, mapOriginalZipFilenameFor, mapMetaFilenameFor,
-  mapFolderPrefix, isMapHistoryPath, mapHistoryFilenameFor,
+  mapFolderPrefix, isMapHistoryPath, mapHistoryFilenameFor, mapHistoryJsonFilenameFor,
   generateAssetId,
   type CharFormat,
 } from './paths';
@@ -85,20 +86,38 @@ interface MapMeta {
   name?: string;
   version?: number;
   /** 이전 버전들의 기록 (current 제외). 새 버전 업로드 시 옛 active 의 정보가 push 된다.
-   *  각 record 의 savedAt 은 _history/<savedAt>.zip 파일과 1:1 매핑. */
+   *  각 record 의 savedAt 은 _history/<savedAt>.{zip|json} 파일과 1:1 매핑. */
   versionHistory?: MapVersionRecord[];
   /** 이 (current) 자산이 저장된 ISO timestamp. */
   savedAt?: string;
   fields?: Record<string, string>;
-  // ZIP 맵 전용 (legacy 단일 .json 맵은 'single' 또는 undefined).
-  format?: 'single' | 'zip';
+  /** 'zip'        — Tiled ZIP 업로드 (기본 흐름).
+   *  'single'     — legacy 단일 Tiled .json/.tmj (folder 구조 없음).
+   *  'mapeditor'  — helloworld-mapeditor 가 추출한 단일 main.json (schemaVersion=1).
+   *                 ZIP 과 같은 maps/<name>/ 폴더 + meta.json + _history/ 흐름 공유. */
+  format?: 'single' | 'zip' | 'mapeditor';
   originalMapFilename?: string;
+  /** Tiled ZIP 일 때만 — _history 백업 다운로드용. */
   originalZipUrl?: string;
   totalSize?: number;
-  info?: {
-    width?: number; height?: number; tilewidth?: number; tileheight?: number;
-    layers?: number; tilesets?: string[];
-  };
+  /** info 는 format 별로 다른 모양 — render 시 format 분기.
+   *   - zip/single: Tiled 통계 (width/height/tilewidth/...)
+   *   - mapeditor : 객체 수 + bounds + 종류별 카운트 */
+  info?: TiledInfo | MapeditorInfo;
+}
+interface TiledInfo {
+  width?: number; height?: number; tilewidth?: number; tileheight?: number;
+  layers?: number; tilesets?: string[];
+}
+interface MapeditorInfo {
+  schemaVersion: number;
+  bounds: { x: number; y: number; w: number; h: number };
+  objectCount: number;
+  objectCountByType: Record<string, number>;
+}
+function isMapeditorInfo(info: MapMeta['info'] | null | undefined): info is MapeditorInfo {
+  return !!info && typeof (info as MapeditorInfo).schemaVersion === 'number'
+      && (info as MapeditorInfo).objectCount !== undefined;
 }
 type AudioCategory = 'bgm' | 'effect';
 interface AudioMeta {
@@ -1065,11 +1084,22 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
     const rows: Array<[string, string]> = [];
     rows.push(['id', assetId]);
     rows.push(['version', versionLabel]);
-    if (info) {
-      if (info.width && info.height) rows.push(['size (tiles)', `${info.width} × ${info.height}`]);
-      if (info.tilewidth && info.tileheight) rows.push(['tile', `${info.tilewidth} × ${info.tileheight}`]);
-      if (info.layers != null) rows.push(['layers', String(info.layers)]);
-      if (info.tilesets?.length) rows.push(['tilesets', info.tilesets.join(', ')]);
+    if (info && isMapeditorInfo(info)) {
+      // mapeditor 포맷 — 객체/bounds 통계
+      rows.push(['format', `mapeditor v${info.schemaVersion}`]);
+      const b = info.bounds;
+      rows.push(['bounds (m)', `${b.w.toFixed(1)} × ${b.h.toFixed(1)} @ (${b.x}, ${b.y})`]);
+      rows.push(['objects', String(info.objectCount)]);
+      for (const [t, n] of Object.entries(info.objectCountByType)) {
+        rows.push([`  · ${t}`, String(n)]);
+      }
+    } else if (info) {
+      // Tiled (zip 또는 legacy single) — 기존 동작 그대로
+      const ti = info as TiledInfo;
+      if (ti.width && ti.height) rows.push(['size (tiles)', `${ti.width} × ${ti.height}`]);
+      if (ti.tilewidth && ti.tileheight) rows.push(['tile', `${ti.tilewidth} × ${ti.tileheight}`]);
+      if (ti.layers != null) rows.push(['layers', String(ti.layers)]);
+      if (ti.tilesets?.length) rows.push(['tilesets', ti.tilesets.join(', ')]);
     } else {
       rows.push(['format', 'not-a-tiled-map']);
     }
@@ -1086,6 +1116,23 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
     statsEl.innerHTML = '<div class="stat-key">Loading…</div><div class="stat-val">—</div>';
     void fetch(it.url, { cache: 'reload' }).then((r) => r.ok ? r.json() : null).then((j) => {
       if (!j || typeof j !== 'object') { renderStats(null); return; }
+      // mapeditor 포맷이면 그쪽 info 로.
+      const me = j as { schemaVersion?: unknown; objects?: unknown; bounds?: unknown };
+      if (me.schemaVersion === 1 && Array.isArray(me.objects)) {
+        const byType: Record<string, number> = {};
+        for (const o of me.objects) {
+          const t = (o && typeof o === 'object') ? String((o as { type?: unknown }).type ?? 'unknown') : 'unknown';
+          byType[t] = (byType[t] ?? 0) + 1;
+        }
+        const br = (me.bounds && typeof me.bounds === 'object') ? me.bounds as { x?: number; y?: number; w?: number; h?: number } : {};
+        renderStats({
+          schemaVersion: 1,
+          bounds: { x: br.x ?? 0, y: br.y ?? 0, w: br.w ?? 0, h: br.h ?? 0 },
+          objectCount: me.objects.length,
+          objectCountByType: byType,
+        });
+        return;
+      }
       const m = j as { width?: number; height?: number; tilewidth?: number; tileheight?: number; layers?: unknown[]; tilesets?: Array<{ name?: string; source?: string }> };
       renderStats({
         width: m.width, height: m.height, tilewidth: m.tilewidth, tileheight: m.tileheight,
@@ -1146,13 +1193,16 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
     }
   };
 
-  // ── 버전 업로드 + history (ZIP 맵만 지원) ───────────────────────────────
+  // ── 버전 업로드 + history (ZIP 맵 또는 mapeditor 맵) ───────────────────
   const versionBtn = document.getElementById('map-upload-version') as HTMLButtonElement | null;
   const versionInput = document.getElementById('map-version-input') as HTMLInputElement | null;
   const historyHost = document.getElementById('map-history');
   if (versionBtn && versionInput && historyHost) {
-    if (isZipMap) {
+    const isMapeditor = meta?.format === 'mapeditor';
+    if (isZipMap && !isMapeditor) {
+      // Tiled ZIP 맵 — 기존 흐름
       versionBtn.style.display = '';
+      versionInput.accept = '.zip';
       versionBtn.onclick = () => versionInput.click();
       versionInput.onchange = (): void => {
         const f = versionInput.files?.[0];
@@ -1160,7 +1210,18 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
         if (!f) return;
         void uploadMapNewVersion(it, baseName, f);
       };
-      // history 목록 — _history/*.zip 들 fetch
+      void renderMapHistory(historyHost, it, baseName, meta, previewC);
+    } else if (isZipMap && isMapeditor) {
+      // mapeditor JSON 맵 — .json 받음
+      versionBtn.style.display = '';
+      versionInput.accept = '.json';
+      versionBtn.onclick = () => versionInput.click();
+      versionInput.onchange = (): void => {
+        const f = versionInput.files?.[0];
+        versionInput.value = '';
+        if (!f) return;
+        void uploadMapeditorNewVersion(it, baseName, f);
+      };
       void renderMapHistory(historyHost, it, baseName, meta, previewC);
     } else {
       versionBtn.style.display = 'none';
@@ -1205,9 +1266,12 @@ async function renderMapHistory(
   try {
     const all = await listAssets(token, 'maps');
     const historyPrefix = `${mapFolderPrefix(baseName)}_history/`;
-    const historyZips = all.filter((b) => b.pathname.startsWith(historyPrefix) && b.pathname.endsWith('.zip'));
+    // ZIP 백업(Tiled) 과 JSON 백업(mapeditor) 둘 다 _history/ 에 공존 가능.
+    const isMapeditor = meta?.format === 'mapeditor';
+    const histExt = isMapeditor ? '.json' : '.zip';
+    const historyZips = all.filter((b) => b.pathname.startsWith(historyPrefix) && b.pathname.endsWith(histExt));
 
-    // versionHistory 가 있으면 (새 자산) 그걸 진실 source 로 사용. 없으면 (옛 자산) zip 파일명에서 추론.
+    // versionHistory 가 있으면 (새 자산) 그걸 진실 source 로 사용. 없으면 (옛 자산) 파일명에서 추론.
     const rows: VersionRowData[] = [];
     const currentVersion = meta?.version ?? (historyZips.length + 1);
     const currentSavedAt = meta?.savedAt ?? new Date(currentEntry.uploadedAt).toISOString();
@@ -1217,31 +1281,35 @@ async function renderMapHistory(
       originalMapFilename: meta?.originalMapFilename ?? '(unknown)',
       isCurrent: true,
       previewUrl: currentEntry.url,
-      downloadUrl: meta?.originalZipUrl,
-      downloadName: `${meta?.name || baseName}-v${currentVersion}.zip`,
+      // mapeditor 는 original ZIP 없음 — current 다운로드는 main.json URL 자체.
+      downloadUrl: isMapeditor ? currentEntry.url : meta?.originalZipUrl,
+      downloadName: `${meta?.name || baseName}-v${currentVersion}${histExt}`,
     });
 
-    // history 행들. versionHistory 있으면 사용, 아니면 zip 파일명에서 추론
+    const historyFilenameFor = (ts: string): string =>
+      isMapeditor ? mapHistoryJsonFilenameFor(baseName, ts) : mapHistoryFilenameFor(baseName, ts);
+
+    // history 행들. versionHistory 있으면 사용, 아니면 파일명에서 추론
     if (meta?.versionHistory && meta.versionHistory.length > 0) {
       for (const rec of meta.versionHistory) {
-        const zipPath = mapHistoryFilenameFor(baseName, rec.savedAt);  // maps/<id>/_history/<safe>.zip → 'characters' 가 아니라 'maps' prefix 제거된 filename
-        const fullPath = `maps/${zipPath}`;
-        const zip = historyZips.find((z) => z.pathname === fullPath);
+        const histPath = historyFilenameFor(rec.savedAt);
+        const fullPath = `maps/${histPath}`;
+        const blob = historyZips.find((z) => z.pathname === fullPath);
         rows.push({
           version: rec.version,
           savedAt: rec.savedAt,
           originalMapFilename: rec.originalMapFilename,
           isCurrent: false,
-          previewUrl: zip?.url ?? '',
-          downloadUrl: zip?.url,
-          downloadName: `${meta?.name || baseName}-v${rec.version}.zip`,
+          previewUrl: blob?.url ?? '',
+          downloadUrl: blob?.url,
+          downloadName: `${meta?.name || baseName}-v${rec.version}${histExt}`,
         });
       }
     } else if (historyZips.length > 0) {
-      // 옛 자산 fallback — zip 파일명의 timestamp 를 사용. 파일 이름은 모름 ('(legacy)').
+      // 옛 자산 fallback — 파일명의 timestamp 사용. 파일 이름은 모름 ('(legacy)').
       const sortedAsc = [...historyZips].sort((a, b) => a.pathname.localeCompare(b.pathname));
       sortedAsc.forEach((z, idx) => {
-        const stem = z.pathname.slice(historyPrefix.length).replace(/\.zip$/, '');
+        const stem = z.pathname.slice(historyPrefix.length).replace(/\.(zip|json)$/i, '');
         const iso = historyFilenameToIso(stem);
         rows.push({
           version: idx + 1,
@@ -1250,7 +1318,7 @@ async function renderMapHistory(
           isCurrent: false,
           previewUrl: z.url,
           downloadUrl: z.url,
-          downloadName: `${baseName}-v${idx + 1}.zip`,
+          downloadName: `${baseName}-v${idx + 1}${histExt}`,
         });
       });
     }
@@ -2273,8 +2341,10 @@ async function handleFiles(files: FileList | File[]): Promise<void> {
       if (isMapZipFile(f)) {
         await uploadMapZipWithModal(f);
       } else {
-        // legacy: 단일 .json/.tmj 파일 직접 업로드
-        await uploadOne(f, f.name, startCat);
+        // 단일 .json — mapeditor 포맷이면 새 흐름, 아니면 legacy 단일 Tiled.
+        const meParsed = await tryParseMapeditorJson(f);
+        if (meParsed) await uploadMapeditorJsonWithModal(meParsed);
+        else          await uploadOne(f, f.name, startCat);
       }
     } else {
       await uploadOne(f, f.name, startCat);
@@ -2899,6 +2969,234 @@ async function uploadZipMap(
     }
   };
 
+  await run();
+}
+
+// ── helloworld-mapeditor 단일 JSON 맵 업로드 ──────────────────────────────
+//
+// ZIP 의 modal/스타일을 재사용:
+//   - 같은 #map-upload-modal 컴포넌트
+//   - 같은 maps/<name>/ 폴더 구조 + meta.json + _history/
+//   - 다른 점: side files / original.zip 없음, info 가 MapeditorInfo, format='mapeditor'
+
+async function uploadMapeditorJsonWithModal(parsed: ParsedMapeditorJson): Promise<void> {
+  const mapsLoadedP = ensureMapsLoaded();
+
+  const modal = document.getElementById('map-upload-modal')!;
+  const nameInput = document.getElementById('mu-name') as HTMLInputElement;
+  const fnameEl = document.getElementById('mu-filename')!;
+  const statsEl = document.getElementById('mu-stats')!;
+  const filesEl = document.getElementById('mu-files')!;
+  const warnEl = document.getElementById('mu-warn')!;
+  const submitBtn = document.getElementById('mu-submit') as HTMLButtonElement;
+  const cancelBtn = document.getElementById('mu-cancel') as HTMLButtonElement;
+
+  const baseFromFile = parsed.originalFilename.replace(/\.[^.]+$/, '');
+  nameInput.value = baseFromFile;
+  fnameEl.textContent = `${parsed.originalFilename} · ${fmtSize(parsed.jsonFile.size)} · mapeditor`;
+  warnEl.classList.add('hidden');
+
+  // 통계 — mapeditor 전용
+  statsEl.innerHTML = '';
+  const b = parsed.info.bounds;
+  const rows: Array<[string, string]> = [
+    ['schema', `v${parsed.info.schemaVersion}`],
+    ['bounds (m)', `${b.w.toFixed(1)} × ${b.h.toFixed(1)} @ (${b.x}, ${b.y})`],
+    ['objects', String(parsed.info.objectCount)],
+  ];
+  for (const [t, n] of Object.entries(parsed.info.objectCountByType)) {
+    rows.push([`  · ${t}`, String(n)]);
+  }
+  for (const [k, v] of rows) {
+    const a = document.createElement('div'); a.className = 'stat-key'; a.textContent = k;
+    const c = document.createElement('div'); c.className = 'stat-val'; c.textContent = v;
+    statsEl.appendChild(a); statsEl.appendChild(c);
+  }
+
+  // 파일 목록 — 단일 main.json 만.
+  filesEl.innerHTML = '';
+  const tag = document.createElement('span');
+  tag.className = 'lib-tag';
+  tag.textContent = `${parsed.originalFilename} (map)`;
+  filesEl.appendChild(tag);
+
+  modal.classList.remove('hidden');
+  submitBtn.disabled = true;
+  nameInput.focus();
+  nameInput.select();
+
+  const validate = (): void => {
+    const raw = nameInput.value.trim();
+    if (!raw) {
+      warnEl.textContent = 'Name is required.';
+      warnEl.classList.remove('hidden');
+      submitBtn.disabled = true; return;
+    }
+    if (isMapNameTaken(raw)) {
+      warnEl.textContent = `A map named "${raw}" already exists.`;
+      warnEl.classList.remove('hidden');
+      submitBtn.disabled = true; return;
+    }
+    warnEl.classList.add('hidden');
+    submitBtn.disabled = false;
+  };
+  nameInput.addEventListener('input', validate);
+  validate();
+
+  void mapsLoadedP.then(() => {
+    if (nameInput.value === baseFromFile && isMapNameTaken(baseFromFile)) {
+      nameInput.value = suggestUniqueMapName(baseFromFile);
+      nameInput.select();
+    }
+    validate();
+  });
+
+  await new Promise<void>((resolve) => {
+    const cleanup = (): void => {
+      modal.classList.add('hidden');
+      submitBtn.onclick = null;
+      cancelBtn.onclick = null;
+      nameInput.onkeydown = null;
+      nameInput.removeEventListener('input', validate);
+      resolve();
+    };
+    const doUpload = async (): Promise<void> => {
+      const raw = nameInput.value.trim();
+      if (!raw || isMapNameTaken(raw)) { validate(); return; }
+      const assetId = generateAssetId(raw, 'map');
+      cleanup();
+      await uploadMapeditorJson(parsed, assetId, raw);
+    };
+    submitBtn.onclick = (): void => { void doUpload(); };
+    cancelBtn.onclick = (): void => cleanup();
+    nameInput.onkeydown = (e): void => {
+      if (e.key === 'Enter' && !submitBtn.disabled) { e.preventDefault(); void doUpload(); }
+      else if (e.key === 'Escape') { e.preventDefault(); cleanup(); }
+    };
+  });
+}
+
+async function uploadMapeditorJson(
+  parsed: ParsedMapeditorJson, assetId: string, displayName: string,
+): Promise<void> {
+  const baseName = assetId;
+  const totalFiles = 2;          // main.json + meta.json
+  const progress = appendProgressRow(displayName);
+
+  const run = async (): Promise<void> => {
+    progress.setStage(displayName);
+    progress.setPercent(0);
+    let done = 0;
+    const tick = (): void => { done++; progress.setPercent(Math.round((done / totalFiles) * 100)); };
+    try {
+      // 1) main.json (= 사용자가 올린 JSON 그대로)
+      progress.setStage(`${displayName} — main.json`);
+      const mainFile = new File([parsed.jsonFile], mapMainFilenameFor(baseName), { type: 'application/json' });
+      await uploadAsset(token, 'maps', mainFile);
+      tick();
+      // 2) meta.json
+      progress.setStage(`${displayName} — metadata`);
+      const meta: MapMeta = {
+        id: assetId,
+        name: displayName,
+        version: 1,
+        versionHistory: [],
+        savedAt: new Date().toISOString(),
+        format: 'mapeditor',
+        originalMapFilename: parsed.originalFilename,
+        info: parsed.info,
+      };
+      const metaFile = new File(
+        [JSON.stringify({ schema: 1, ...meta }, null, 2)],
+        mapMetaFilenameFor(baseName),
+        { type: 'application/json' },
+      );
+      await uploadAsset(token, 'maps', metaFile);
+      tick();
+      progress.success(`${displayName} — done (mapeditor)`);
+      refreshList();
+    } catch (e) {
+      if (e instanceof AuthError) clearToken();
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      progress.failure(`${displayName} — ${msg}`, run);
+    }
+  };
+  await run();
+}
+
+/** 기존 mapeditor 맵에 새 JSON 업로드 — 옛 main.json 을 _history/<ISO>.json 으로 백업 후 덮어쓰기.
+ *  Tiled ZIP 의 uploadMapNewVersion 과 같은 패턴이지만 단일 파일이라 단순. */
+async function uploadMapeditorNewVersion(
+  currentEntry: BlobItem, baseName: string, newJson: File,
+): Promise<void> {
+  const progress = appendProgressRow(`${baseName} — new version`);
+
+  const run = async (): Promise<void> => {
+    progress.setStage(`${baseName} — parsing JSON`);
+    progress.setPercent(0);
+    const parsed = await tryParseMapeditorJson(newJson);
+    if (!parsed) {
+      progress.failure(`${baseName} — 새 파일이 mapeditor 포맷이 아닙니다 (schemaVersion=1 + objects 필요).`, run);
+      return;
+    }
+    const meta = mapMetaByPath.get(currentEntry.pathname);
+    if (meta?.format !== 'mapeditor') {
+      progress.failure(`${baseName} — 기존 맵이 mapeditor 포맷이 아닙니다. 같은 이름으로 새 업로드 후 옛 자산 삭제 권장.`, run);
+      return;
+    }
+    const totalFiles = 3; // backup + main + meta
+    let done = 0;
+    const tick = (): void => { done++; progress.setPercent(Math.round((done / totalFiles) * 100)); };
+
+    try {
+      // 1) 기존 main.json 을 _history/<ISO>.json 으로 백업.
+      const backupIsoTs = new Date().toISOString();
+      progress.setStage(`${baseName} — backing up current version`);
+      const r = await fetch(currentEntry.url, { cache: 'reload' });
+      if (!r.ok) throw new Error(`current main.json fetch failed: ${r.status}`);
+      const buf = await r.arrayBuffer();
+      const histFile = new File([buf], mapHistoryJsonFilenameFor(baseName, backupIsoTs), { type: 'application/json' });
+      await uploadAsset(token, 'maps', histFile);
+      tick();
+      // 2) 새 main.json 덮어쓰기.
+      progress.setStage(`${baseName} — main.json`);
+      const mainFile = new File([newJson], mapMainFilenameFor(baseName), { type: 'application/json' });
+      await uploadAsset(token, 'maps', mainFile);
+      tick();
+      // 3) meta.json 갱신 — version + 1, versionHistory append.
+      progress.setStage(`${baseName} — metadata`);
+      const baselineVersion = meta.version ?? 1;
+      const newVersion = baselineVersion + 1;
+      const prevHistory = meta.versionHistory ?? [];
+      const newHistory = [...prevHistory, {
+        version: baselineVersion,
+        savedAt: backupIsoTs,
+        originalMapFilename: meta.originalMapFilename ?? '(unknown)',
+      }];
+      const newMeta: MapMeta = {
+        ...meta,
+        version: newVersion,
+        versionHistory: newHistory,
+        savedAt: new Date().toISOString(),
+        format: 'mapeditor',
+        originalMapFilename: parsed.originalFilename,
+        info: parsed.info,
+      };
+      const metaFile = new File(
+        [JSON.stringify({ schema: 1, ...newMeta }, null, 2)],
+        mapMetaFilenameFor(baseName),
+        { type: 'application/json' },
+      );
+      await uploadAsset(token, 'maps', metaFile);
+      tick();
+      progress.success(`${baseName} — v${newVersion} (mapeditor)`);
+      refreshList();
+    } catch (e) {
+      if (e instanceof AuthError) clearToken();
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      progress.failure(`${baseName} — ${msg}`, run);
+    }
+  };
   await run();
 }
 
