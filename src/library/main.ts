@@ -962,6 +962,27 @@ function countInFolder(id: string, byFolder: Map<string | null, BlobItem[]>): nu
   return n;
 }
 
+/** <select> 를 폴더 트리로 채운다 — 맨 위 "(No folder)" + 중첩을 들여쓰기로 표현.
+ *  업로드 모달 등에서 폴더를 고를 때 재사용. */
+function populateFolderSelect(sel: HTMLSelectElement, folderList: FolderNode[], selectedId: string | null): void {
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '(No folder)';
+  sel.appendChild(none);
+  const walk = (parentId: string | null, depth: number): void => {
+    for (const f of childFolders(folderList, parentId)) {
+      const opt = document.createElement('option');
+      opt.value = f.id;
+      opt.textContent = `${'  '.repeat(depth)}${depth > 0 ? '└ ' : ''}${f.name}`;
+      sel.appendChild(opt);
+      walk(f.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  sel.value = selectedId ?? '';
+}
+
 /** 네트워크 재요청 없이 현재 메모리 상태(currentItems + 메타 + folders)로 리스트만 다시 그림. */
 function rerenderTree(): void {
   const list = document.getElementById('file-list');
@@ -3730,6 +3751,7 @@ async function uploadAudioWithModal(file: File): Promise<void> {
   const catSel = document.getElementById('au-category') as HTMLSelectElement;
   const loopIn = document.getElementById('au-loop') as HTMLInputElement;
   const memoIn = document.getElementById('au-memo') as HTMLTextAreaElement;
+  const folderSel = document.getElementById('au-folder') as HTMLSelectElement;
   const warnEl = document.getElementById('au-warn')!;
   const submitBtn = document.getElementById('au-submit') as HTMLButtonElement;
   const cancelBtn = document.getElementById('au-cancel') as HTMLButtonElement;
@@ -3739,6 +3761,8 @@ async function uploadAudioWithModal(file: File): Promise<void> {
   catSel.value = /\.(wav|aiff?|aifc)$/i.test(file.name) ? 'effect' : 'bgm';
   loopIn.checked = true;
   memoIn.value = '';
+  // bgm 탭에서만 업로드 가능하므로 모듈 folders 가 곧 bgm 폴더 트리. 기본값은 노폴더.
+  populateFolderSelect(folderSel, folders, null);
   fnameEl.textContent = `${file.name} · ${fmtSize(file.size)}`;
   warnEl.classList.add('hidden');
 
@@ -3798,9 +3822,10 @@ async function uploadAudioWithModal(file: File): Promise<void> {
       const cat = catSel.value as AudioCategory;
       const loop = loopIn.checked;
       const memo = memoIn.value.trim() || undefined;
+      const folderId = folderSel.value || null;
       const renamed = new File([file], `${cleaned}.${ext}`, { type: file.type });
       cleanup();
-      await uploadAudioFile(renamed, cleaned, raw, cat, loop, memo);
+      await uploadAudioFile(renamed, cleaned, raw, cat, loop, memo, folderId);
     };
     submitBtn.onclick = () => { void doUpload(); };
     cancelBtn.onclick = cleanup;
@@ -3815,6 +3840,7 @@ async function uploadAudioWithModal(file: File): Promise<void> {
 async function uploadAudioFile(
   file: File, baseName: string, displayName: string,
   category: AudioCategory, loop: boolean, memo: string | undefined,
+  folderId: string | null = null,
 ): Promise<void> {
   const progress = appendProgressRow(file.name);
   const run = async (): Promise<void> => {
@@ -3829,6 +3855,7 @@ async function uploadAudioFile(
         loop,
         category,
         memo,
+        folderId: folderId ?? undefined,
         savedAt: new Date().toISOString(),
       };
       const metaFile = new File([JSON.stringify(meta, null, 2)], `${baseName}.meta.json`, { type: 'application/json' });
