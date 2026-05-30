@@ -11,7 +11,7 @@ import {
   detectActionsFromFile, ANIMATION_CONFIGS, FRAME_SIZE,
   type LPCAction,
 } from './lpc-detect';
-import { parseLpcZip, isLpcZipFile, type ParsedLpcZip } from './lpc-zip';
+import { parseLpcZip, buildLpcZipFromAnims, isLpcZipFile, type ParsedLpcZip, type LpcCharacterJson } from './lpc-zip';
 import { parseMapZip, isMapZipFile, type ParsedMapZip } from './map-zip';
 import { tryParseMapeditorJson, type ParsedMapeditorJson } from './mapeditor-json';
 import {
@@ -71,6 +71,7 @@ interface CharMeta {
   customAnims?: string[];
   totalSize?: number;              // ZIP 의 모든 파일 합산 크기 (표시용)
   originalZipUrl?: string;         // ZIP 캐릭터의 원본 .zip URL (다운로드용)
+  character?: LpcCharacterJson | null; // LPC 생성기 state — 원본 ZIP 미보관 시 재조립용
 }
 
 // pathname → 자산 메타 (캐릭터/맵/오디오 공용 — 카테고리별로 사용하는 필드만 채움).
@@ -213,20 +214,58 @@ function wireDownload(btn: HTMLAnchorElement, url: string | null, filename: stri
   };
 }
 
+/**
+ * 클릭 시 builder() 가 만든 Blob 을 다운로드하는 앵커 배선.
+ * 원본 파일이 없어 즉석에서 재조립해야 하는 경우(예: 레거시 ZIP 캐릭터)에 쓴다.
+ * 진행 중엔 버튼을 잠가 중복 실행을 막고, 끝나면 원래 라벨로 복구.
+ */
+function wireDownloadBuild(btn: HTMLAnchorElement, filename: string, title: string, builder: () => Promise<Blob>): void {
+  btn.title = title;
+  btn.removeAttribute('href');
+  btn.style.opacity = '';
+  btn.style.pointerEvents = '';
+  btn.style.cursor = 'pointer';
+  const label = btn.textContent;
+  btn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (btn.dataset.busy) return;
+    btn.dataset.busy = '1';
+    btn.style.opacity = '0.5';
+    btn.textContent = '…';
+    void (async () => {
+      try {
+        const blob = await builder();
+        triggerBlobDownload(blob, filename);
+      } catch (err) {
+        showToast(`다운로드 실패: ${(err as Error).message}`, 'err');
+      } finally {
+        delete btn.dataset.busy;
+        btn.style.opacity = '';
+        btn.textContent = label;
+      }
+    })();
+  };
+}
+
+/** Blob 을 임시 앵커 클릭으로 저장. */
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(objUrl);
+}
+
 /** cross-origin URL 을 로컬 파일로 강제 다운로드. fetch 실패 시 토스트로 알림. */
 async function downloadFromUrl(url: string, filename: string): Promise<void> {
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    const objUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = objUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(objUrl);
+    triggerBlobDownload(await res.blob(), filename);
   } catch (err) {
     showToast(`다운로드 실패: ${(err as Error).message}`, 'err');
   }
@@ -499,7 +538,7 @@ async function refreshList(): Promise<void> {
               actions?: LPCAction[]; body?: BodyType; name?: string; race?: string;
               fields?: Record<string, string>;
               format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
-              originalZipUrl?: string;
+              originalZipUrl?: string; character?: LpcCharacterJson | null;
             };
             const charPath = entryPathForSidecar(s.pathname);
             // 대응하는 대표 파일이 실제로 존재하지 않으면 orphan 메타 — 무시
@@ -515,6 +554,7 @@ async function refreshList(): Promise<void> {
                 anims: j.anims,
                 customAnims: j.customAnims,
                 originalZipUrl: j.originalZipUrl,
+                character: j.character,
                 totalSize: folderTotalSize.get(charPath),
               });
             }
@@ -680,7 +720,7 @@ async function ensureCharactersLoaded(): Promise<void> {
           actions?: LPCAction[]; body?: BodyType; name?: string; race?: string;
           fields?: Record<string, string>;
           format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
-          originalZipUrl?: string;
+          originalZipUrl?: string; character?: LpcCharacterJson | null;
         };
         const charPath = entryPathForSidecar(s.pathname);
         if (!entryPaths.has(charPath)) return;
@@ -689,7 +729,7 @@ async function ensureCharactersLoaded(): Promise<void> {
             actions: j.actions, body: j.body, name: j.name, race: j.race,
             fields: j.fields, format: j.format ?? 'single',
             anims: j.anims, customAnims: j.customAnims,
-            originalZipUrl: j.originalZipUrl,
+            originalZipUrl: j.originalZipUrl, character: j.character,
           });
         }
       } catch { /* 무시 */ }
@@ -888,11 +928,18 @@ function renderDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {
 
   // 다운로드 버튼 — ZIP 포맷은 보관해둔 원본 zip, single 은 PNG 그대로
   dlBtn.style.display = '';
+  const charName = initialName || charBaseName(it.pathname);
   if (meta?.format === 'zip' && meta.originalZipUrl) {
-    const charName = initialName || charBaseName(it.pathname);
     wireDownload(dlBtn, meta.originalZipUrl, `${charName}.zip`, 'Download original ZIP');
+  } else if (meta?.format === 'zip' && meta.anims && Object.keys(meta.anims).length) {
+    // 원본 ZIP 미보관(구버전) — 보관된 액션 PNG 들로 즉석에서 재조립해 받게 한다
+    const animMap = meta.anims;
+    const customAnims = meta.customAnims;
+    const character = meta.character;
+    wireDownloadBuild(dlBtn, `${charName}.zip`, 'Rebuild & download ZIP (original not stored)', () =>
+      buildLpcZipFromAnims({ anims: animMap, customAnims, character }));
   } else if (meta?.format === 'zip') {
-    // ZIP 캐릭터인데 원본이 없는 경우 (구버전) — 다운로드 비활성
+    // ZIP 캐릭터인데 재조립할 PNG 조차 없는 경우 — 다운로드 비활성
     wireDownload(dlBtn, null, '', 'Original ZIP not stored for this character');
   } else {
     wireDownload(dlBtn, it.url, shortName(it.pathname), 'Download original sheet');

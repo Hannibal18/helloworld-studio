@@ -33,6 +33,32 @@ export interface ParsedLpcZip {
   thumbnail: File | null;
 }
 
+/** 보관된 액션 PNG(URL) 들로 재-import 가능한 LPC ZIP 을 즉석에서 재조립한다.
+ *
+ *  원본 .zip 을 보관하기 시작한(originalZipUrl) 기능 이전에 업로드된 레거시 ZIP 캐릭터는
+ *  원본이 없어 다운로드가 막힌다. 하지만 액션별 PNG 는 maps/<char>/anims/ 에 그대로 남아 있으므로
+ *  parseLpcZip 이 기대하는 standard/·custom/·credits/character.json 구조로 다시 묶으면 그대로 round-trip 된다. */
+export async function buildLpcZipFromAnims(input: {
+  anims: Record<string, string>;   // action 이름 → PNG URL
+  customAnims?: string[];          // custom/ 으로 분류할 액션들 (오버사이즈 등)
+  character?: LpcCharacterJson | null;
+}): Promise<Blob> {
+  const zip = new JSZip();
+  const custom = new Set(input.customAnims ?? []);
+  await Promise.all(
+    Object.entries(input.anims).map(async ([anim, url]) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${anim}.png HTTP ${res.status}`);
+      const buf = await res.arrayBuffer();
+      zip.file(`${custom.has(anim) ? 'custom' : 'standard'}/${anim}.png`, buf);
+    }),
+  );
+  if (input.character) {
+    zip.file('credits/character.json', JSON.stringify(input.character, null, 2));
+  }
+  return zip.generateAsync({ type: 'blob' });
+}
+
 /** 파일이 LPC ZIP 인지 빠르게 감별 — 확장자 .zip + MIME. */
 export function isLpcZipFile(file: File): boolean {
   const lower = file.name.toLowerCase();
