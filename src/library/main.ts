@@ -199,6 +199,7 @@ function showToast(msg: string, kind: 'ok' | 'err' = 'ok', ms = 2200): void {
   if (!el) return;
   el.textContent = msg;
   el.classList.toggle('err', kind === 'err');
+  el.setAttribute('aria-live', kind === 'err' ? 'assertive' : 'polite');
   el.classList.remove('hidden');
   window.clearTimeout((el as HTMLElement & { __t?: number }).__t);
   (el as HTMLElement & { __t?: number }).__t = window.setTimeout(() => el.classList.add('hidden'), ms);

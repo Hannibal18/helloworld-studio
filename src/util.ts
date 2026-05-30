@@ -22,6 +22,8 @@ export function showToast(msg: string, kind: 'ok' | 'err' = 'ok', ms = 1800): vo
   if (!el) return;
   el.textContent = msg;
   el.classList.toggle('err', kind === 'err');
+  // 에러는 즉시 announce, 일반 알림은 polite (스크린리더).
+  el.setAttribute('aria-live', kind === 'err' ? 'assertive' : 'polite');
   el.classList.remove('hidden');
   window.clearTimeout((el as HTMLElement & { __t?: number }).__t);
   (el as HTMLElement & { __t?: number }).__t = window.setTimeout(() => {

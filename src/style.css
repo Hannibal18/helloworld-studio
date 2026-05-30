@@ -21,7 +21,8 @@
   /* 텍스트 — 순백 대신 살짝 죽인 중성 */
   --text:      #d4d7dc;
   --text-dim:  #8a909a;
-  --text-mute: #5a606a;
+  /* mute 는 hint/meta 에 두루 쓰여 대비가 중요 — 기존 #5a606a(~2.6:1, AA 미달)에서 상향 */
+  --text-mute: #7d8492;
 
   /* 단일 액센트 */
   --accent:    #4d8ee6;
@@ -157,8 +158,11 @@ a:hover { color: #7badf0; }
   border-color: var(--border-2);
   color: var(--text);
 }
-.st-scene-tab .x { margin-left: 6px; opacity: 0.6; color: var(--text-mute); }
-.st-scene-tab .x:hover { opacity: 1; color: var(--text); }
+.st-scene-tab .x {
+  margin-left: 4px; opacity: 0.6; color: var(--text-mute);
+  padding: 4px 7px; border-radius: var(--radius);   /* 탭 닫기 hit 영역 확대 */
+}
+.st-scene-tab .x:hover { opacity: 1; color: var(--text); background: var(--surface-3); }
 
 .st-preview-wrap {
   flex: 1; min-height: 0; background: #050608; position: relative;
@@ -186,6 +190,15 @@ a:hover { color: #7badf0; }
   animation: rec-pulse 1.2s infinite;
 }
 @keyframes rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+/* 모션 민감 사용자 — 애니메이션/전환 사실상 제거 (REC 펄스 무한 깜빡임 포함). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 .st-transport {
   display: flex; align-items: center; gap: 6px;
@@ -361,6 +374,8 @@ a:hover { color: #7badf0; }
   transform: translate(-50%, -50%) rotate(45deg);
   cursor: grab;
 }
+/* 보이는 다이아몬드는 작게 두되 탭/그랩 영역은 넓혀 터치 정확도 확보. */
+.tl-key::before { content: ''; position: absolute; inset: -7px; }
 .tl-key.selected {
   background: var(--text);
   border-color: var(--warn);
