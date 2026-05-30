@@ -1049,7 +1049,8 @@ function makeFolderHeader(folder: FolderNode, depth: number, count: number): HTM
 
   const caret = document.createElement('span');
   caret.className = 'lib-folder-caret';
-  caret.textContent = isCollapsed ? '▸' : '▾';
+  caret.textContent = isCollapsed ? '▶' : '▼';
+  caret.title = isCollapsed ? 'Expand' : 'Collapse';
 
   const icon = document.createElement('span');
   icon.className = 'lib-folder-icon';
