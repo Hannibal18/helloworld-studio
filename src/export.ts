@@ -177,7 +177,9 @@ function resolveAsset(kind: 'map' | 'bgm', url: string, name: string): string {
   return id;
 }
 function resolveCharAsset(charIdx: number): string {
-  const safe = ((charIdx % CHARACTER_COUNT) + CHARACTER_COUNT) % CHARACTER_COUNT;
+  // 유효한 builtin 인덱스(0..COUNT-1)만 그대로 사용. -1(업로드 미지원)·범위초과·NaN 은
+  // 조용한 wraparound(예전엔 -1 → 8 로 엉뚱한 캐릭터 렌더) 대신 0번으로 안전 폴백.
+  const safe = Number.isInteger(charIdx) && charIdx >= 0 && charIdx < CHARACTER_COUNT ? charIdx : 0;
   const exist = state.assets.find((a) => a.kind === 'char' && (a as { charIdx?: number }).charIdx === safe);
   if (exist) return exist.id;
   const id = uid('a');

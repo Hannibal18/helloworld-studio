@@ -370,7 +370,8 @@ function drawBubble(cx: number, cy: number, text: string): void {
   ctx.font = '11px Galmuri11, system-ui';
   ctx.textBaseline = 'middle';
   const padX = 7, padY = 5;
-  const lines = wrapText(text, 160);
+  // 런타임 player.ts 와 동일한 wrap 폭(200) — 프리뷰↔재생 말풍선 줄바꿈 일치(WYSIWYG).
+  const lines = wrapText(text, 200);
   const lineH = 14;
   const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + padX * 2;
   const h = lines.length * lineH + padY * 2;
