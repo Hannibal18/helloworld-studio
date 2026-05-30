@@ -15,7 +15,7 @@
 
 import { loadMap, drawTileLayer } from '../lib/map';
 import type { TileMap } from '../lib/map';
-import { drawCharacter, prescaleCharacter, CHARACTER_COUNT } from '../lib/sprites';
+import { drawCharacter, prescaleCharacter, safeCharIdx } from '../lib/sprites';
 import type { ExportedCutscene, ExportedScene } from '../export';
 import type { Dir } from '../lib/types';
 
@@ -176,8 +176,7 @@ export function playCutscene(
       const samples = sc.tracks.map((trk) => ({ trk, s: sampleTrk(trk, sceneTime) }));
       samples.sort((a, b) => a.s.y - b.s.y);
       for (const { trk, s } of samples) {
-        const safeIdx = ((trk.charIdx % CHARACTER_COUNT) + CHARACTER_COUNT) % CHARACTER_COUNT;
-        drawCharacter(ctx, s.x - worldX, s.y - worldY, safeIdx, s.dir, s.walk, -1, false, nowSec);
+        drawCharacter(ctx, s.x - worldX, s.y - worldY, safeCharIdx(trk.charIdx), s.dir, s.walk, -1, false, nowSec);
       }
       // 위 레이어
       for (const name of orderAbove) {

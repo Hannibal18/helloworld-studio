@@ -208,19 +208,25 @@ export function notify(): void {
 // 개별 mutation 마다 역연산을 잡는 대신, 변경이 잦아든 시점(디바운스)에 project 전체를
 // JSON 스냅샷으로 ring 에 적재한다. 같은 스냅샷이면 무시 → 연속 녹화/드래그가 1 step.
 
-const HISTORY_LIMIT = 60;
+const HISTORY_LIMIT = 30;
+const HISTORY_BYTE_BUDGET = 24 * 1024 * 1024;   // ~24MB — 녹화 다수로 스냅샷이 커질 때 모바일 메모리 보호.
 let history: string[] = [];
 let historyIdx = -1;
 let suppressCapture = false;
 
 /** 현재 project 를 히스토리에 적재 (직전과 동일하면 무시). main 의 구독에서 디바운스로 호출. */
 export function captureHistory(): void {
-  if (suppressCapture) return;
+  // 녹화 중엔 적재 안 함 — 멈춘 뒤 한 번만 잡혀 한 take 가 1 undo step 이 된다.
+  if (suppressCapture || state.rt.recording) return;
   const snap = JSON.stringify(state.project);
   if (historyIdx >= 0 && history[historyIdx] === snap) return;
   if (historyIdx < history.length - 1) history = history.slice(0, historyIdx + 1);  // redo 가지 절단
   history.push(snap);
-  if (history.length > HISTORY_LIMIT) history.shift();
+  // 개수 + 바이트 예산으로 오래된 항목 축출.
+  let bytes = history.reduce((n, s) => n + s.length, 0);
+  while (history.length > HISTORY_LIMIT || (history.length > 1 && bytes > HISTORY_BYTE_BUDGET)) {
+    bytes -= (history.shift() as string).length;
+  }
   historyIdx = history.length - 1;
 }
 export function canUndo(): boolean { return historyIdx > 0; }
@@ -231,13 +237,16 @@ function applySnapshot(snap: string): void {
   if (state.project.activeSceneIdx >= state.project.scenes.length) {
     state.project.activeSceneIdx = Math.max(0, state.project.scenes.length - 1);
   }
-  // 삭제됐을 수 있는 대상 참조 해제 + 트랜스포트 정지.
+  // 삭제됐을 수 있는 대상 참조 해제 + 트랜스포트 완전 정지(카운트다운 포함) + 재생 위치 리셋.
   state.rt.selectedBubbleId = null;
   state.rt.selectedCamKey = null;
   state.rt.selectedTrackId = null;
   state.rt.armedTrackId = null;
   state.rt.recording = false;
   state.rt.playing = false;
+  state.rt.countingDown = false;   // 카운트다운 중 undo → 복원 상태에서 녹화 자동시작 방지
+  state.rt.countdownT = 0;
+  state.rt.sceneTime = 0;          // 줄어든 duration 너머에 playhead 가 남지 않게
   // 복원으로 인한 변경은 새 히스토리로 잡지 않는다.
   suppressCapture = true;
   notify();

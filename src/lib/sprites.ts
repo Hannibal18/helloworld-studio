@@ -31,6 +31,12 @@ const SOURCE_FOOT_Y = 58;           // 프레임 안에서 발 y 위치
 
 export const CHARACTER_COUNT = 9;   // public/sprites/characters/ 안의 시트 개수
 
+/** charIdx 를 유효 범위(0..COUNT-1)로 정규화. -1(업로드 미지원)/범위초과/NaN 은 0 으로 클램프.
+ *  예전 modulo wraparound 는 -1 을 8(엉뚱한 캐릭터)로 매핑했음 — 에디터 import 와 일치하도록 클램프. */
+export function safeCharIdx(charIdx: number): number {
+  return Number.isInteger(charIdx) && charIdx >= 0 && charIdx < CHARACTER_COUNT ? charIdx : 0;
+}
+
 // 기본값 — prescaleCharacter 가 호출되면 갱신됨. 캐논 LPC 비례 32×48 가까이.
 export let CHAR_W = 32;
 export let CHAR_H = 48;
@@ -77,7 +83,7 @@ export async function drawCharacterPreview(
   charIdx: number,
   dir: Dir = 'down',
 ): Promise<void> {
-  const safe = ((charIdx % CHARACTER_COUNT) + CHARACTER_COUNT) % CHARACTER_COUNT;
+  const safe = safeCharIdx(charIdx);
   await loadPromises[safe];
   if (!readyFlags[safe]) return;
   const sheet = spritesheets[safe];
@@ -172,7 +178,7 @@ export function drawCharacter(
   dead: boolean,
   now: number,
 ): void {
-  const safeIdx = ((charIdx % CHARACTER_COUNT) + CHARACTER_COUNT) % CHARACTER_COUNT;
+  const safeIdx = safeCharIdx(charIdx);
   const sheet = prescaledSheets[safeIdx];
   if (!sheet) {
     // 스프라이트시트/prescale 준비 전 폴백 — 회색 원

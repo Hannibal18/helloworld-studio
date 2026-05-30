@@ -196,6 +196,7 @@ let dragPayload: DragPayload | null = null;
 // 리스트 검색/정렬 상태 (고정 바에서 제어).
 type LibSortKey = 'name' | 'newest' | 'oldest' | 'largest';
 let searchQuery = '';
+let searchTimer = 0;   // 검색 디바운스 타이머 (탭 전환 시 취소 가능하도록 모듈 스코프).
 let sortKey: LibSortKey = ((): LibSortKey => {
   try {
     const v = localStorage.getItem('studio.lib.sort');
@@ -1059,6 +1060,19 @@ function rerenderTree(): void {
   if (!list) return;
   list.innerHTML = '';
   renderAssetTree(list, currentItems);
+  refreshDetailFolderSelect();   // 열린 상세 패널의 'Move to' 옵션/선택값 동기화 (폴더 CRUD/이동 반영)
+}
+
+/** 현재 열린 상세 패널의 폴더 <select> 를 최신 folders + 자산의 현재 폴더로 다시 채운다. */
+function refreshDetailFolderSelect(): void {
+  let selId: string | null = null;
+  let it: BlobItem | null = null;
+  if (activeCat === 'characters') { selId = 'detail-folder'; it = selectedChar; }
+  else if (activeCat === 'maps') { selId = 'map-folder'; it = selectedMap; }
+  else { selId = 'audio-folder'; it = selectedAudio; }
+  if (!it) return;
+  const sel = document.getElementById(selId) as HTMLSelectElement | null;
+  if (sel) populateFolderSelect(sel, folders, assetFolderId(it));
 }
 
 /** 가상 폴더 트리 렌더 — 툴바 + 중첩 폴더 + 자산 + 미분류.
@@ -1066,6 +1080,13 @@ function rerenderTree(): void {
 function renderAssetTree(listEl: HTMLElement, items: BlobItem[]): void {
   listEl.appendChild(makeTreeToolbar());
   const sorted = sortItems(items);
+
+  // 검색 중엔 평면 결과라 폴더 펼치기/접기가 무의미 → 버튼 비활성 (모든 렌더 경로가 거침).
+  const searching = searchQuery.trim().length > 0;
+  const expandBtn = document.getElementById('lib-expand-all') as HTMLButtonElement | null;
+  const collapseBtn = document.getElementById('lib-collapse-all') as HTMLButtonElement | null;
+  if (expandBtn) expandBtn.disabled = searching;
+  if (collapseBtn) collapseBtn.disabled = searching;
 
   const q = searchQuery.trim().toLowerCase();
   if (q) {
@@ -1336,6 +1357,8 @@ async function writeAssetFolderId(it: BlobItem, folderId: string | null): Promis
 }
 
 async function moveAssetToFolder(it: BlobItem, folderId: string | null): Promise<void> {
+  // 대상 폴더가 (스테일 select 등으로) 더 이상 없으면 dangling folderId 를 쓰지 않는다.
+  if (folderId && !folderById(folders, folderId)) { showToast('That folder no longer exists', 'err'); return; }
   // raw 값으로 비교 — 삭제된 폴더를 가리키는 dangling folderId 를 최상위로 끌어다 놓으면
   // (assetFolderId 로는 null===null 로 no-op 처리돼) 서버의 stale 값이 안 지워진다.
   if ((rawFolderId(it) ?? null) === folderId) return;   // 변화 없음
@@ -3991,7 +4014,8 @@ ready(async () => {
         activeCat = target as Category;
         persistTab(activeCat);
       }
-      // 탭 바꾸면 검색 초기화 (다른 카테고리에 옛 쿼리가 남지 않게).
+      // 탭 바꾸면 검색 초기화 (다른 카테고리에 옛 쿼리가 남지 않게). 대기 중 디바운스도 취소.
+      window.clearTimeout(searchTimer);
       searchQuery = '';
       const si = document.getElementById('lib-search') as HTMLInputElement | null;
       if (si) si.value = '';
@@ -4003,8 +4027,8 @@ ready(async () => {
   applyTabHighlight();
 
   // ── 리스트 컨트롤 바: 검색 / 정렬 / 전체 펼치기·접기 ──
+  // (전체 펼치기/접기 버튼의 검색 중 비활성은 renderAssetTree 에서 일괄 처리 — 모든 경로가 거침)
   const searchIn = document.getElementById('lib-search') as HTMLInputElement;
-  let searchTimer = 0;
   searchIn.addEventListener('input', () => {
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(() => { searchQuery = searchIn.value; rerenderTree(); }, 150);
