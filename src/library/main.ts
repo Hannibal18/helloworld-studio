@@ -183,6 +183,55 @@ function shortName(pathname: string): string {
   return pathname.split('/').slice(1).join('/') || pathname;
 }
 
+/**
+ * 다운로드 앵커(⬇)를 cross-origin 안전하게 배선한다.
+ *
+ * Blob URL 은 앱과 다른 오리진이라 브라우저가 `<a download>` 를 무시하고
+ * 그 URL 로 페이지를 이동시켜 버린다 → "한 번 누르면 페이지가 떠나고 그 뒤로 안 먹는" 증상.
+ * 그래서 클릭마다 fetch → objectURL → 임시 앵커 클릭으로 직접 받는다(매번 새 URL 이라 반복 안전).
+ *
+ * url 이 null 이면 비활성(보관된 원본 없음) 상태로 표시.
+ */
+function wireDownload(btn: HTMLAnchorElement, url: string | null, filename: string, title: string): void {
+  btn.title = title;
+  if (!url) {
+    btn.onclick = (e) => e.preventDefault();
+    btn.removeAttribute('href');
+    btn.style.opacity = '0.4';
+    btn.style.pointerEvents = 'none';
+    return;
+  }
+  btn.style.opacity = '';
+  btn.style.pointerEvents = '';
+  btn.style.cursor = 'pointer';
+  btn.href = url;                       // 우클릭 "다른 이름으로 저장" 도 동작하게 href 는 유지
+  btn.setAttribute('download', filename);
+  btn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void downloadFromUrl(url, filename);
+  };
+}
+
+/** cross-origin URL 을 로컬 파일로 강제 다운로드. fetch 실패 시 토스트로 알림. */
+async function downloadFromUrl(url: string, filename: string): Promise<void> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(objUrl);
+  } catch (err) {
+    showToast(`다운로드 실패: ${(err as Error).message}`, 'err');
+  }
+}
+
 function extLabel(pathname: string): string {
   const ext = pathname.split('.').pop()?.toLowerCase() ?? '';
   return ext.toUpperCase();
@@ -838,24 +887,15 @@ function renderDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {
   saveBtn.disabled = true;
 
   // 다운로드 버튼 — ZIP 포맷은 보관해둔 원본 zip, single 은 PNG 그대로
+  dlBtn.style.display = '';
   if (meta?.format === 'zip' && meta.originalZipUrl) {
-    dlBtn.href = meta.originalZipUrl;
     const charName = initialName || charBaseName(it.pathname);
-    dlBtn.setAttribute('download', `${charName}.zip`);
-    dlBtn.title = 'Download original ZIP';
-    dlBtn.style.display = '';
+    wireDownload(dlBtn, meta.originalZipUrl, `${charName}.zip`, 'Download original ZIP');
   } else if (meta?.format === 'zip') {
     // ZIP 캐릭터인데 원본이 없는 경우 (구버전) — 다운로드 비활성
-    dlBtn.removeAttribute('href');
-    dlBtn.title = 'Original ZIP not stored for this character';
-    dlBtn.style.opacity = '0.4';
-    dlBtn.style.pointerEvents = 'none';
+    wireDownload(dlBtn, null, '', 'Original ZIP not stored for this character');
   } else {
-    dlBtn.href = it.url;
-    dlBtn.setAttribute('download', shortName(it.pathname));
-    dlBtn.title = 'Download original sheet';
-    dlBtn.style.opacity = '';
-    dlBtn.style.pointerEvents = '';
+    wireDownload(dlBtn, it.url, shortName(it.pathname), 'Download original sheet');
   }
 
   // 커스텀 스키마 필드 폼 렌더
@@ -1049,23 +1089,12 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
 
   // 다운로드 버튼 — ZIP 맵은 원본 ZIP, legacy 단일 파일은 그대로
   if (isZipMap && meta?.originalZipUrl) {
-    dlBtn.href = meta.originalZipUrl;
-    dlBtn.setAttribute('download', `${initialName || baseName}.zip`);
-    dlBtn.title = 'Download original ZIP';
-    dlBtn.style.opacity = '';
-    dlBtn.style.pointerEvents = '';
+    wireDownload(dlBtn, meta.originalZipUrl, `${initialName || baseName}.zip`, 'Download original ZIP');
   } else if (isZipMap) {
     // ZIP 맵인데 originalZipUrl 없음 — 비활성
-    dlBtn.removeAttribute('href');
-    dlBtn.title = 'Original ZIP not stored for this map';
-    dlBtn.style.opacity = '0.4';
-    dlBtn.style.pointerEvents = 'none';
+    wireDownload(dlBtn, null, '', 'Original ZIP not stored for this map');
   } else {
-    dlBtn.href = it.url;
-    dlBtn.setAttribute('download', shortName(it.pathname));
-    dlBtn.title = 'Download original map';
-    dlBtn.style.opacity = '';
-    dlBtn.style.pointerEvents = '';
+    wireDownload(dlBtn, it.url, shortName(it.pathname), 'Download original map');
   }
 
   // 미리보기 — 일단 placeholder, 그 다음 진짜 맵 렌더 시도. 실패 시 placeholder 유지.
@@ -1346,19 +1375,11 @@ async function renderMapHistory(
       const tsEl = document.createElement('div'); tsEl.className = 'h-ts'; tsEl.textContent = fmtIsoForDisplay(r.savedAt);
       meta2.appendChild(fname); meta2.appendChild(tsEl);
 
-      // 다운로드
+      // 다운로드 — wireDownload 가 cross-origin fetch + 행 클릭 분리(stopPropagation)까지 처리
       const dl = document.createElement('a');
       dl.className = 'st-btn';
       dl.textContent = '⬇';
-      if (r.downloadUrl) {
-        dl.href = r.downloadUrl;
-        dl.setAttribute('download', r.downloadName);
-      } else {
-        dl.style.opacity = '0.4';
-        dl.style.pointerEvents = 'none';
-      }
-      dl.title = 'Download this version';
-      dl.onclick = (e) => e.stopPropagation();  // 행 클릭과 분리
+      wireDownload(dl, r.downloadUrl ?? null, r.downloadName, 'Download this version');
 
       row.appendChild(num); row.appendChild(meta2); row.appendChild(dl);
 
@@ -1807,9 +1828,7 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
   warnEl.classList.add('hidden');
 
   // 다운로드 버튼 — 원본 오디오 파일 직접 다운로드
-  dlBtn.href = it.url;
-  dlBtn.setAttribute('download', shortName(it.pathname));
-  dlBtn.title = 'Download original audio';
+  wireDownload(dlBtn, it.url, shortName(it.pathname), 'Download original audio');
 
   const fieldsHost = renderCustomFieldsForm(customHost, schemasByCategory.bgm.fields, meta?.fields ?? {}, () => updateSaveState());
 
