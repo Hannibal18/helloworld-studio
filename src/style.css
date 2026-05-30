@@ -71,6 +71,16 @@ a:hover { color: #7badf0; }
 }
 .st-topbar-left  { display: flex; align-items: center; gap: 12px; }
 .st-topbar-right { display: flex; align-items: center; gap: 6px; }
+.st-save-status {
+  font-size: var(--fs-xs); color: var(--text-mute);
+  font-family: var(--font-mono); min-width: 64px; text-align: right;
+  transition: opacity 0.3s, color 0.2s;
+}
+.st-save-status.ok  { color: var(--ok); }
+.st-save-status.err { color: var(--rec); }
+.st-save-status.idle { opacity: 0.4; }
+.st-btn-icon { padding: 5px 9px; font-size: 14px; line-height: 1; }
+.st-btn-icon:disabled { opacity: 0.35; cursor: default; }
 .st-brand {
   font-size: var(--fs-md); font-weight: 600;
   color: var(--text);
@@ -158,11 +168,15 @@ a:hover { color: #7badf0; }
   border-color: var(--border-2);
   color: var(--text);
 }
-.st-scene-tab .x {
-  margin-left: 4px; opacity: 0.6; color: var(--text-mute);
-  padding: 4px 7px; border-radius: var(--radius);   /* 탭 닫기 hit 영역 확대 */
+.st-scene-tab .x,
+.st-scene-tab .dup {
+  margin-left: 4px; opacity: 0.55; color: var(--text-mute);
+  padding: 4px 7px; border-radius: var(--radius);   /* 탭 버튼 hit 영역 확대 */
 }
-.st-scene-tab .x:hover { opacity: 1; color: var(--text); background: var(--surface-3); }
+.st-scene-tab .x:hover,
+.st-scene-tab .dup:hover { opacity: 1; color: var(--text); background: var(--surface-3); }
+.st-scene-tab.dragging { opacity: 0.5; }
+.st-scene-tab.drop-target { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 
 .st-preview-wrap {
   flex: 1; min-height: 0; background: #050608; position: relative;

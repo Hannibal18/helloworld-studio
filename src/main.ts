@@ -1,6 +1,9 @@
 // 스튜디오 부트스트랩 — DOM 준비 → 모든 모듈 init → 상태 구독 → 매 프레임 BGM 동기화.
 
-import { state, notify, activeScene, subscribe, uid } from './state';
+import {
+  state, notify, activeScene, subscribe, uid,
+  captureHistory, undo, redo, canUndo, canRedo,
+} from './state';
 import { loadBuiltinAssets, loadLibraryAssets, initBinUI, renderBin } from './bin';
 import { initStage, screenToWorld, currentMap } from './stage';
 import { initTimeline, renderTimeline } from './timeline';
@@ -181,20 +184,79 @@ ready(() => {
   }
   requestAnimationFrame(tick);
 
-  // ===== 자동 저장 (디바운스 600ms) =====
-  let saveTimer: number | null = null;
-  const scheduleSave = (): void => {
-    if (saveTimer !== null) window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => {
-      try {
-        const data = serialize(state.project);
-        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data));
-      } catch (e) {
-        console.warn('[studio:autosave] 저장 실패', e);
-      }
-      saveTimer = null;
-    }, 600);
+  // ===== 자동 저장 + 저장 상태 표시 =====
+  const saveStatusEl = document.getElementById('save-status');
+  let lastStatus = '';
+  let savedIdleTimer = 0;
+  const setSaveStatus = (s: 'dirty' | 'saving' | 'saved' | 'failed'): void => {
+    if (!saveStatusEl) return;
+    if (s === lastStatus && s !== 'saved') return;   // 60Hz 녹화 중 중복 갱신 방지
+    lastStatus = s;
+    window.clearTimeout(savedIdleTimer);
+    saveStatusEl.classList.remove('ok', 'err', 'idle');
+    if (s === 'saved') {
+      saveStatusEl.textContent = '✓ Saved';
+      saveStatusEl.classList.add('ok');
+      savedIdleTimer = window.setTimeout(() => saveStatusEl.classList.add('idle'), 1600);
+    } else if (s === 'saving') {
+      saveStatusEl.textContent = 'Saving…';
+    } else if (s === 'failed') {
+      saveStatusEl.textContent = '⚠ Save failed';
+      saveStatusEl.classList.add('err');
+    } else {
+      saveStatusEl.textContent = 'Unsaved…';
+    }
   };
+
+  let saveTimer: number | null = null;
+  const doSave = (): void => {
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(serialize(state.project)));
+      setSaveStatus('saved');
+    } catch (e) {
+      // 흔한 원인은 localStorage 용량 초과 — 조용히 실패하면 데이터 유실로 이어진다.
+      console.warn('[studio:autosave] 저장 실패', e);
+      setSaveStatus('failed');
+      showToast('자동 저장 실패 — 저장 공간이 가득 찼을 수 있어요 (Export 로 백업하세요)', 'err', 4500);
+    }
+  };
+  const scheduleSave = (): void => {
+    setSaveStatus('dirty');
+    if (saveTimer !== null) window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => { saveTimer = null; doSave(); }, 600);
+  };
+  // 탭 닫기/새로고침 직전 — 디바운스 대기 중인 변경을 즉시 flush.
+  const flushSave = (): void => {
+    if (saveTimer !== null) { window.clearTimeout(saveTimer); saveTimer = null; doSave(); }
+  };
+  window.addEventListener('beforeunload', flushSave);
+
+  // ===== Undo / Redo =====
+  const undoBtn = document.getElementById('btn-undo') as HTMLButtonElement | null;
+  const redoBtn = document.getElementById('btn-redo') as HTMLButtonElement | null;
+  const updateUndoButtons = (): void => {
+    if (undoBtn) undoBtn.disabled = !canUndo();
+    if (redoBtn) redoBtn.disabled = !canRedo();
+  };
+  // 변경이 잦아든 뒤에만 스냅샷 — 연속 녹화/드래그/타이핑이 1 step 으로 합쳐진다.
+  let historyTimer = 0;
+  const scheduleHistory = (): void => {
+    window.clearTimeout(historyTimer);
+    historyTimer = window.setTimeout(() => { captureHistory(); updateUndoButtons(); }, 500);
+  };
+  const doUndo = (): void => { if (undo()) { showToast('Undo'); updateUndoButtons(); } };
+  const doRedo = (): void => { if (redo()) { showToast('Redo'); updateUndoButtons(); } };
+  undoBtn?.addEventListener('click', doUndo);
+  redoBtn?.addEventListener('click', doRedo);
+  window.addEventListener('keydown', (e) => {
+    const t = e.target as HTMLElement | null;
+    const tag = t?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return;  // 편집 중 텍스트는 건너뜀
+    if (!(e.metaKey || e.ctrlKey)) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); doUndo(); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); doRedo(); }
+  });
 
   // ===== 상태 구독 → UI 갱신 =====
   let firstRender = true;
@@ -203,8 +265,9 @@ ready(() => {
     renderBin();
     renderTimeline();
     renderProps();
-    // 녹화 중에는 매 프레임 변경이 일어나므로 저장 디바운스가 필수
+    // 녹화 중에는 매 프레임 변경이 일어나므로 저장/히스토리 모두 디바운스가 필수
     scheduleSave();
+    scheduleHistory();
     if (firstRender) {
       firstRender = false;
       // 첫 렌더 직후 — 안내 토스트 (복원 토스트가 이미 있으면 덮지 않게 살짝 늦춤)
@@ -215,6 +278,8 @@ ready(() => {
       }, 1500);
     }
   });
-  // 초기 렌더 트리거
+  // 초기 렌더 트리거 + 히스토리 baseline 적재
   notify();
+  captureHistory();
+  updateUndoButtons();
 });

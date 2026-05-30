@@ -203,6 +203,59 @@ export function notify(): void {
   });
 }
 
+// ===== Undo / Redo (프로젝트 스냅샷 ring) =====
+// 녹화는 본질적으로 시행착오 — 덮어쓰기/Clear/삭제가 즉시 영구라 안전망이 필요하다.
+// 개별 mutation 마다 역연산을 잡는 대신, 변경이 잦아든 시점(디바운스)에 project 전체를
+// JSON 스냅샷으로 ring 에 적재한다. 같은 스냅샷이면 무시 → 연속 녹화/드래그가 1 step.
+
+const HISTORY_LIMIT = 60;
+let history: string[] = [];
+let historyIdx = -1;
+let suppressCapture = false;
+
+/** 현재 project 를 히스토리에 적재 (직전과 동일하면 무시). main 의 구독에서 디바운스로 호출. */
+export function captureHistory(): void {
+  if (suppressCapture) return;
+  const snap = JSON.stringify(state.project);
+  if (historyIdx >= 0 && history[historyIdx] === snap) return;
+  if (historyIdx < history.length - 1) history = history.slice(0, historyIdx + 1);  // redo 가지 절단
+  history.push(snap);
+  if (history.length > HISTORY_LIMIT) history.shift();
+  historyIdx = history.length - 1;
+}
+export function canUndo(): boolean { return historyIdx > 0; }
+export function canRedo(): boolean { return historyIdx < history.length - 1; }
+
+function applySnapshot(snap: string): void {
+  state.project = JSON.parse(snap) as CutsceneProject;
+  if (state.project.activeSceneIdx >= state.project.scenes.length) {
+    state.project.activeSceneIdx = Math.max(0, state.project.scenes.length - 1);
+  }
+  // 삭제됐을 수 있는 대상 참조 해제 + 트랜스포트 정지.
+  state.rt.selectedBubbleId = null;
+  state.rt.selectedCamKey = null;
+  state.rt.selectedTrackId = null;
+  state.rt.armedTrackId = null;
+  state.rt.recording = false;
+  state.rt.playing = false;
+  // 복원으로 인한 변경은 새 히스토리로 잡지 않는다.
+  suppressCapture = true;
+  notify();
+  queueMicrotask(() => { suppressCapture = false; });
+}
+export function undo(): boolean {
+  if (historyIdx <= 0) return false;
+  historyIdx -= 1;
+  applySnapshot(history[historyIdx]);
+  return true;
+}
+export function redo(): boolean {
+  if (historyIdx >= history.length - 1) return false;
+  historyIdx += 1;
+  applySnapshot(history[historyIdx]);
+  return true;
+}
+
 // ===== 헬퍼 =====
 
 export function activeScene(): Scene {
