@@ -45,6 +45,19 @@
         <div id="settings-body"></div>
       </section>
 
+      <!-- 리스트 컨트롤 바 — 검색/정렬/펼치기. rerender 와 무관하게 고정(검색 포커스 유지). -->
+      <div class="lib-listbar hidden" id="lib-listbar">
+        <input id="lib-search" class="lib-search" type="search" placeholder="Search assets…" autocomplete="off" aria-label="Search assets" />
+        <select id="lib-sort" class="lib-sort" aria-label="Sort">
+          <option value="name">Name A–Z</option>
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="largest">Largest</option>
+        </select>
+        <button id="lib-expand-all" class="lib-bar-btn" type="button" title="Expand all folders">⊞</button>
+        <button id="lib-collapse-all" class="lib-bar-btn" type="button" title="Collapse all folders">⊟</button>
+      </div>
+
       <div class="lib-content" id="lib-content">
         <ul class="lib-list" id="file-list">
           <li class="lib-empty">Loading…</li>
@@ -84,6 +97,9 @@
               <label class="lib-field">Race
                 <input id="detail-race" type="text" placeholder="human" autocomplete="off" />
               </label>
+              <label class="lib-field">Folder
+                <select id="detail-folder"><option value="">(No folder)</option></select>
+              </label>
               <div id="detail-custom-fields" class="lib-detail-custom"></div>
               <p id="detail-warn" class="auth-error hidden"></p>
               <div class="lib-detail-meta-row">
@@ -105,6 +121,9 @@
             <div id="map-form" class="lib-detail-form hidden">
               <label class="lib-field">Name
                 <input id="map-name" type="text" autocomplete="off" />
+              </label>
+              <label class="lib-field">Folder
+                <select id="map-folder"><option value="">(No folder)</option></select>
               </label>
               <div id="map-stats" class="lib-detail-stats"></div>
               <div id="map-custom-fields" class="lib-detail-custom"></div>
@@ -147,6 +166,9 @@
                   <option value="bgm">BGM</option>
                   <option value="effect">Effect</option>
                 </select>
+              </label>
+              <label class="lib-field">Folder
+                <select id="audio-folder"><option value="">(No folder)</option></select>
               </label>
               <label class="lib-field lib-field-inline">
                 <input id="audio-loop" type="checkbox" />

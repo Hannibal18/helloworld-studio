@@ -192,6 +192,17 @@ function saveCollapsed(cat: Category): void {
 // 진행 중인 드래그 페이로드 — dataTransfer 는 dragover 중 읽기 불가라 모듈 변수로 추적.
 type DragPayload = { kind: 'asset'; pathname: string } | { kind: 'folder'; id: string };
 let dragPayload: DragPayload | null = null;
+
+// 리스트 검색/정렬 상태 (고정 바에서 제어).
+type LibSortKey = 'name' | 'newest' | 'oldest' | 'largest';
+let searchQuery = '';
+let sortKey: LibSortKey = ((): LibSortKey => {
+  try {
+    const v = localStorage.getItem('studio.lib.sort');
+    if (v === 'name' || v === 'newest' || v === 'oldest' || v === 'largest') return v;
+  } catch { /* 무시 */ }
+  return 'name';
+})();
 let lastRenderedAudioPath: string | null = null;
 
 function showToast(msg: string, kind: 'ok' | 'err' = 'ok', ms = 2200): void {
@@ -426,11 +437,13 @@ function setContentMode(): void {
   const audioDetail = document.getElementById('audio-detail')!;
   const upload = document.getElementById('upload-zone')!;
   const settings = document.getElementById('settings-panel')!;
+  const listbar = document.getElementById('lib-listbar')!;
 
   // Settings 보기일 때: 업로드존/리스트/디테일 다 숨기고 settings 만
   if (inSettings) {
     upload.classList.add('hidden');
     content.classList.add('hidden');
+    listbar.classList.add('hidden');
     settings.classList.remove('hidden');
     charDetail.classList.add('hidden');
     mapDetail.classList.add('hidden');
@@ -440,6 +453,7 @@ function setContentMode(): void {
   }
   upload.classList.remove('hidden');
   content.classList.remove('hidden');
+  listbar.classList.remove('hidden');
   settings.classList.add('hidden');
 
   // 카테고리별 detail 패널 노출 + master-detail 레이아웃 적용
@@ -952,6 +966,53 @@ function findItemByPath(pathname: string): BlobItem | undefined {
   return currentItems.find((it) => it.pathname === pathname);
 }
 
+/** 자산의 표시 이름 (카테고리별 meta.name 우선). 정렬·검색·하이라이트 공용. */
+function assetDisplayName(it: BlobItem): string {
+  if (activeCat === 'characters') return charMetaByPath.get(it.pathname)?.name || charBaseName(it.pathname);
+  if (activeCat === 'maps') {
+    return mapMetaByPath.get(it.pathname)?.name
+      || (isZipMapEntryPath(it.pathname) ? mapBaseName(it.pathname) : shortName(it.pathname).replace(/\.[^.]+$/, ''));
+  }
+  return audioMetaByPath.get(it.pathname)?.name || shortName(it.pathname).replace(/\.[^.]+$/, '');
+}
+
+/** 정렬용 크기 — ZIP 캐릭터/맵은 폴더 합산 totalSize, 그 외엔 blob 크기. */
+function assetSize(it: BlobItem): number {
+  if (activeCat === 'characters') return charMetaByPath.get(it.pathname)?.totalSize ?? it.size;
+  if (activeCat === 'maps') return mapMetaByPath.get(it.pathname)?.totalSize ?? it.size;
+  return it.size;
+}
+
+/** 검색 대상 텍스트 — 이름 + 카테고리별 메타(종족/메모/커스텀 필드), 소문자. */
+function assetSearchText(it: BlobItem): string {
+  const parts: string[] = [assetDisplayName(it)];
+  if (activeCat === 'characters') {
+    const m = charMetaByPath.get(it.pathname);
+    if (m?.race) parts.push(m.race);
+    if (m?.fields) parts.push(...Object.values(m.fields));
+  } else if (activeCat === 'maps') {
+    const m = mapMetaByPath.get(it.pathname);
+    if (m?.fields) parts.push(...Object.values(m.fields));
+  } else {
+    const m = audioMetaByPath.get(it.pathname);
+    if (m?.memo) parts.push(m.memo);
+    if (m?.fields) parts.push(...Object.values(m.fields));
+  }
+  return parts.join(' ').toLowerCase();
+}
+
+function sortItems(items: BlobItem[]): BlobItem[] {
+  const arr = [...items];
+  arr.sort((a, b) => {
+    if (sortKey === 'name') return assetDisplayName(a).localeCompare(assetDisplayName(b));
+    if (sortKey === 'largest') return assetSize(b) - assetSize(a);
+    const ta = Date.parse(a.uploadedAt) || 0;
+    const tb = Date.parse(b.uploadedAt) || 0;
+    return sortKey === 'newest' ? tb - ta : ta - tb;
+  });
+  return arr;
+}
+
 function clearDropHints(): void {
   document.querySelectorAll('.drop-into').forEach((el) => el.classList.remove('drop-into'));
 }
@@ -984,6 +1045,14 @@ function populateFolderSelect(sel: HTMLSelectElement, folderList: FolderNode[], 
   sel.value = selectedId ?? '';
 }
 
+/** 상세 패널의 폴더 <select> 와이어링 — 드래그 없는 'Move to…' 대안 (터치/키보드 친화). */
+function wireDetailFolder(selId: string, it: BlobItem): void {
+  const sel = document.getElementById(selId) as HTMLSelectElement | null;
+  if (!sel) return;
+  populateFolderSelect(sel, folders, assetFolderId(it));
+  sel.onchange = () => { void moveAssetToFolder(it, sel.value || null); };
+}
+
 /** 네트워크 재요청 없이 현재 메모리 상태(currentItems + 메타 + folders)로 리스트만 다시 그림. */
 function rerenderTree(): void {
   const list = document.getElementById('file-list');
@@ -992,13 +1061,29 @@ function rerenderTree(): void {
   renderAssetTree(list, currentItems);
 }
 
-/** 가상 폴더 트리 렌더 — 툴바 + 중첩 폴더 + 자산 + 미분류. */
+/** 가상 폴더 트리 렌더 — 툴바 + 중첩 폴더 + 자산 + 미분류.
+ *  검색어가 있으면 폴더 그룹핑을 접고 매칭 자산만 평면 리스트로 보여 준다. */
 function renderAssetTree(listEl: HTMLElement, items: BlobItem[]): void {
   listEl.appendChild(makeTreeToolbar());
+  const sorted = sortItems(items);
 
-  // 자산을 (유효) folderId 로 버킷팅.
+  const q = searchQuery.trim().toLowerCase();
+  if (q) {
+    const matches = sorted.filter((it) => assetSearchText(it).includes(q));
+    if (matches.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'lib-empty';
+      li.textContent = `No matches for “${searchQuery.trim()}”`;
+      listEl.appendChild(li);
+    } else {
+      for (const it of matches) listEl.appendChild(makeItem(it, 0));
+    }
+    return;
+  }
+
+  // 자산을 (유효) folderId 로 버킷팅 (정렬 순서 유지).
   const byFolder = new Map<string | null, BlobItem[]>();
-  for (const it of items) {
+  for (const it of sorted) {
     const fid = assetFolderId(it);
     const arr = byFolder.get(fid);
     if (arr) arr.push(it); else byFolder.set(fid, [it]);
@@ -1390,6 +1475,7 @@ function renderDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {
   nameInput.value = initialName;
   bodySel.value = initialBody;
   raceInput.value = initialRace;
+  wireDetailFolder('detail-folder', it);
   const displaySize = meta?.totalSize ?? it.size;
   subEl.textContent = `${fmtSize(displaySize)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   saveBtn.disabled = true;
@@ -1598,6 +1684,7 @@ function renderMapDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } 
   const baseName = isZipMap ? mapBaseName(it.pathname) : shortName(it.pathname).replace(/\.[^.]+$/, '');
   const initialName = meta?.name ?? baseName;
   nameInput.value = initialName;
+  wireDetailFolder('map-folder', it);
   const displaySize = meta?.totalSize ?? it.size;
   subEl.textContent = `${fmtSize(displaySize)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   saveBtn.disabled = true;
@@ -2337,6 +2424,7 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
   catSel.value = initialCat;
   loopIn.checked = initialLoop;
   memoIn.value = initialMemo;
+  wireDetailFolder('audio-folder', it);
   subEl.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   saveBtn.disabled = true;
   warnEl.classList.add('hidden');
@@ -3903,12 +3991,38 @@ ready(async () => {
         activeCat = target as Category;
         persistTab(activeCat);
       }
+      // 탭 바꾸면 검색 초기화 (다른 카테고리에 옛 쿼리가 남지 않게).
+      searchQuery = '';
+      const si = document.getElementById('lib-search') as HTMLInputElement | null;
+      if (si) si.value = '';
       applyTabHighlight();
       refreshList();
     });
   });
   // 새로고침 후 복원된 탭의 highlight 도 즉시 반영
   applyTabHighlight();
+
+  // ── 리스트 컨트롤 바: 검색 / 정렬 / 전체 펼치기·접기 ──
+  const searchIn = document.getElementById('lib-search') as HTMLInputElement;
+  let searchTimer = 0;
+  searchIn.addEventListener('input', () => {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => { searchQuery = searchIn.value; rerenderTree(); }, 150);
+  });
+  const sortSel = document.getElementById('lib-sort') as HTMLSelectElement;
+  sortSel.value = sortKey;
+  sortSel.addEventListener('change', () => {
+    sortKey = sortSel.value as LibSortKey;
+    try { localStorage.setItem('studio.lib.sort', sortKey); } catch { /* 무시 */ }
+    rerenderTree();
+  });
+  document.getElementById('lib-expand-all')!.addEventListener('click', () => {
+    collapsed.clear(); saveCollapsed(activeCat); rerenderTree();
+  });
+  document.getElementById('lib-collapse-all')!.addEventListener('click', () => {
+    for (const f of folders) collapsed.add(f.id);
+    saveCollapsed(activeCat); rerenderTree();
+  });
 
   // 파일 선택
   const fileIn = document.getElementById('file-input') as HTMLInputElement;

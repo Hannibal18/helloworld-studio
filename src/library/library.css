@@ -783,6 +783,33 @@ html, body {
   width: 100%; height: 100%;
 }
 
+/* ── 리스트 컨트롤 바 (검색/정렬/펼치기) ───────────────────────── */
+.lib-listbar {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: var(--lib-gap);
+  flex-wrap: wrap;
+}
+.lib-search {
+  flex: 1; min-width: 160px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text); font: inherit; font-size: var(--fs-sm);
+  padding: 7px 10px; border-radius: var(--radius);
+}
+.lib-search:focus { outline: none; border-color: var(--accent); }
+.lib-search::placeholder { color: var(--text-mute); }
+.lib-sort {
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-dim); font: inherit; font-size: var(--fs-xs);
+  padding: 7px 8px; border-radius: var(--radius); cursor: pointer;
+}
+.lib-bar-btn {
+  flex-shrink: 0;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-dim); font-size: 14px; line-height: 1;
+  width: 34px; height: 34px; border-radius: var(--radius); cursor: pointer;
+}
+.lib-bar-btn:hover { color: var(--text); border-color: var(--accent); }
+
 /* ── 가상 폴더 트리 (Characters) ─────────────────────────────── */
 /* 깊이에 비례한 들여쓰기 — 폴더 헤더와 자산 행 공통. */
 .lib-content.has-detail .lib-item { padding-left: calc(10px + var(--depth, 0) * 15px); }
