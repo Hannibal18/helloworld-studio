@@ -783,6 +783,104 @@ html, body {
   width: 100%; height: 100%;
 }
 
+/* ── 가상 폴더 트리 (Characters) ─────────────────────────────── */
+/* 깊이에 비례한 들여쓰기 — 폴더 헤더와 자산 행 공통. */
+.lib-content.has-detail .lib-item { padding-left: calc(10px + var(--depth, 0) * 15px); }
+.lib-content.has-detail .lib-item[draggable="true"] { cursor: grab; }
+
+.lib-tree-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.lib-newfolder-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  color: var(--text-dim);
+  font: inherit; font-size: var(--fs-xs); font-family: var(--font-mono);
+  padding: 3px 9px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.lib-newfolder-btn:hover { color: var(--text); border-color: var(--accent); }
+.lib-tree-roothint {
+  font-size: var(--fs-xs); font-family: var(--font-mono);
+  color: var(--text-mute);
+  opacity: 0; transition: opacity 0.12s;
+}
+/* 앱 내부 드래그가 시작되면 최상위 드롭존 힌트를 은은히 노출 (발견성). */
+.lib-list.drag-active .lib-tree-roothint { opacity: 0.55; }
+.lib-tree-toolbar.drop-into .lib-tree-roothint { opacity: 1; }
+
+.lib-folder {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px;
+  padding-left: calc(10px + var(--depth, 0) * 15px);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--fs-sm);
+}
+.lib-folder:hover { background: var(--surface-2); }
+.lib-folder-caret {
+  width: 12px; flex-shrink: 0;
+  color: var(--text-mute);
+  font-size: 10px; text-align: center;
+}
+.lib-folder-icon { flex-shrink: 0; font-size: 13px; }
+.lib-folder-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+.lib-folder-count {
+  flex-shrink: 0;
+  font-size: var(--fs-xs); font-family: var(--font-mono);
+  color: var(--text-mute);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 7px;
+  min-width: 20px; text-align: center;
+}
+.lib-folder-actions {
+  display: flex; gap: 4px; flex-shrink: 0;
+  opacity: 0; transition: opacity 0.12s;
+}
+.lib-folder:hover .lib-folder-actions,
+.lib-folder:focus-within .lib-folder-actions { opacity: 1; }
+.lib-folder-act {
+  background: transparent; border: 0;
+  color: var(--text-mute);
+  font-size: 13px; line-height: 1;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+}
+.lib-folder-act:hover { color: var(--text); background: var(--surface-2); }
+/* 터치 기기: hover 가 없으니 액션을 항상 표시 + 탭 타깃 확대. */
+@media (hover: none) {
+  .lib-folder-actions { opacity: 1; }
+  .lib-folder-act { padding: 9px 11px; font-size: 15px; }
+}
+/* 키보드 포커스 표시 (트리 노드 + 자산 행). */
+.lib-folder:focus-visible,
+.lib-content.has-detail .lib-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 드래그 중 / 드롭 대상 하이라이트 */
+.lib-item.dragging, .lib-folder.dragging { opacity: 0.45; }
+.lib-folder.drop-into,
+.lib-tree-toolbar.drop-into {
+  background: var(--accent-bg);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
 /* 업로드 확인 모달 */
 .cu-box { max-width: 460px; }
 .cu-filename {

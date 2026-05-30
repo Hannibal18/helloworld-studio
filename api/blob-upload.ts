@@ -37,7 +37,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         }
         // 가변 파일(메타, 스키마)은 캐시 OFF — 덮어써도 fetch 가 즉시 최신값.
         // 불변 파일(맵 PNG, BGM 등)은 기본 캐시(1년) 유지.
-        const isMutable = pathname.endsWith('.meta.json') || pathname.startsWith('_schemas/');
+        const isMutable = pathname.endsWith('.meta.json')
+          || pathname.startsWith('_schemas/')
+          || pathname.startsWith('_folders/');
         return {
           allowedContentTypes: [
             'application/json', 'application/octet-stream', 'text/plain',

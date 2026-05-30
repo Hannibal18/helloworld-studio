@@ -31,6 +31,11 @@ import {
   generateAssetId,
   type CharFormat,
 } from './paths';
+import {
+  loadFolders, saveFolders, folderById, childFolders,
+  wouldCycle, isFolderNameTaken,
+  type FolderNode,
+} from './folders';
 
 type Category = 'maps' | 'characters' | 'bgm';
 const EXT_BY_CAT: Record<Category, string[]> = {
@@ -72,6 +77,7 @@ interface CharMeta {
   totalSize?: number;              // ZIP 의 모든 파일 합산 크기 (표시용)
   originalZipUrl?: string;         // ZIP 캐릭터의 원본 .zip URL (다운로드용)
   character?: LpcCharacterJson | null; // LPC 생성기 state — 원본 ZIP 미보관 시 재조립용
+  folderId?: string;               // 소속 가상 폴더 id (없으면 최상위). _folders/<cat>.json 의 FolderNode.id 참조.
 }
 
 // pathname → 자산 메타 (캐릭터/맵/오디오 공용 — 카테고리별로 사용하는 필드만 채움).
@@ -105,6 +111,7 @@ interface MapMeta {
    *   - zip/single: Tiled 통계 (width/height/tilewidth/...)
    *   - mapeditor : 객체 수 + bounds + 종류별 카운트 */
   info?: TiledInfo | MapeditorInfo;
+  folderId?: string;            // 소속 가상 폴더 id (없으면 최상위).
 }
 interface TiledInfo {
   width?: number; height?: number; tilewidth?: number; tileheight?: number;
@@ -128,6 +135,7 @@ interface AudioMeta {
   category?: AudioCategory;
   memo?: string;
   fields?: Record<string, string>;
+  folderId?: string;            // 소속 가상 폴더 id (없으면 최상위).
 }
 const mapMetaByPath = new Map<string, MapMeta>();
 const audioMetaByPath = new Map<string, AudioMeta>();
@@ -162,6 +170,28 @@ const DIR_BY_NAME: Record<string, DirIndex> = { up: 0, left: 1, down: 2, right: 
 // refreshList 가 같은 항목을 다시 렌더하려 할 때, 사용자가 저장 안 한 편집이 있으면 폼을 안 덮어쓰게 한다.
 let lastRenderedCharPath: string | null = null;
 let lastRenderedMapPath: string | null = null;
+
+// ── 가상 폴더 상태 ─────────────────────────────────────────────────
+// folders: 현재 활성 카테고리의 폴더 트리 (refreshList 에서 로드).
+// currentItems: 현재 리스트에 그려진 대표 자산들 — 드롭 시 pathname 으로 역참조.
+let folders: FolderNode[] = [];
+let currentItems: BlobItem[] = [];
+// 접힌 폴더 id 집합 — 카테고리별로 localStorage 에 영속.
+let collapsed = new Set<string>();
+const COLLAPSE_KEY = 'studio.lib.collapsed';
+function loadCollapsed(cat: Category): Set<string> {
+  try {
+    const raw = localStorage.getItem(`${COLLAPSE_KEY}.${cat}`);
+    if (raw) return new Set(JSON.parse(raw) as string[]);
+  } catch { /* 무시 */ }
+  return new Set();
+}
+function saveCollapsed(cat: Category): void {
+  try { localStorage.setItem(`${COLLAPSE_KEY}.${cat}`, JSON.stringify([...collapsed])); } catch { /* 무시 */ }
+}
+// 진행 중인 드래그 페이로드 — dataTransfer 는 dragover 중 읽기 불가라 모듈 변수로 추적.
+type DragPayload = { kind: 'asset'; pathname: string } | { kind: 'folder'; id: string };
+let dragPayload: DragPayload | null = null;
 let lastRenderedAudioPath: string | null = null;
 
 function showToast(msg: string, kind: 'ok' | 'err' = 'ok', ms = 2200): void {
@@ -518,6 +548,7 @@ async function refreshList(): Promise<void> {
               category: (j as { category?: AudioCategory }).category,
               memo: (j as { memo?: string }).memo,
               fields: j.fields,
+              folderId: j.folderId,
             });
           }
         } catch { /* 무시 */ }
@@ -539,6 +570,7 @@ async function refreshList(): Promise<void> {
               fields?: Record<string, string>;
               format?: 'single' | 'zip'; anims?: Record<string, string>; customAnims?: string[];
               originalZipUrl?: string; character?: LpcCharacterJson | null;
+              folderId?: string;
             };
             const charPath = entryPathForSidecar(s.pathname);
             // 대응하는 대표 파일이 실제로 존재하지 않으면 orphan 메타 — 무시
@@ -555,6 +587,7 @@ async function refreshList(): Promise<void> {
                 customAnims: j.customAnims,
                 originalZipUrl: j.originalZipUrl,
                 character: j.character,
+                folderId: j.folderId,
                 totalSize: folderTotalSize.get(charPath),
               });
             }
@@ -563,15 +596,20 @@ async function refreshList(): Promise<void> {
       }
     }
 
+    currentItems = items;
+
+    // 모든 카테고리: 가상 폴더 트리로 렌더 (접이식 + 중첩 + 드래그&드롭).
+    folders = await loadFolders(token, activeCat);
+    collapsed = loadCollapsed(activeCat);
+    list.innerHTML = '';
+    renderAssetTree(list, items);
+
     if (items.length === 0) {
-      list.innerHTML = `<li class="lib-empty">No ${emptyLabel(activeCat)} yet. Upload above.</li>`;
       if (activeCat === 'characters') renderDetail(null);
       else if (activeCat === 'maps') renderMapDetail(null);
       else if (activeCat === 'bgm') renderAudioDetail(null);
       return;
     }
-    list.innerHTML = '';
-    for (const it of items) list.appendChild(makeItem(it));
 
     // 첫 행 자동 선택 — 각 카테고리별.
     // 이미 선택된 항목을 다시 그리는 경로는 preserveDirty=true 로 — 저장 안 한 편집을 살림.
@@ -737,11 +775,35 @@ async function ensureCharactersLoaded(): Promise<void> {
   } catch { /* 무시 */ }
 }
 
-function makeItem(it: BlobItem): HTMLElement {
+function makeItem(it: BlobItem, depth = 0): HTMLElement {
   const li = document.createElement('li');
   li.className = 'lib-item';
   li.dataset.pathname = it.pathname;
+  li.style.setProperty('--depth', String(depth));
   const isChar = activeCat === 'characters' && it.pathname.toLowerCase().endsWith('.png');
+
+  // 모든 카테고리에서 드래그해서 폴더로 이동 가능.
+  li.draggable = true;
+  li.addEventListener('dragstart', (e) => {
+    dragPayload = { kind: 'asset', pathname: it.pathname };
+    li.classList.add('dragging');
+    li.closest('.lib-list')?.classList.add('drag-active');   // 최상위 드롭존 힌트 노출
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', it.pathname);
+    }
+  });
+  li.addEventListener('dragend', () => {
+    dragPayload = null;
+    li.classList.remove('dragging');
+    li.closest('.lib-list')?.classList.remove('drag-active');
+    clearDropHints();
+  });
+  // 키보드 선택 — Enter 로 행 선택(상세 패널 열기).
+  li.tabIndex = 0;
+  li.addEventListener('keydown', (e) => {
+    if (e.target === li && e.key === 'Enter') { e.preventDefault(); li.click(); }
+  });
 
   // 좌측: 캐릭터면 썸네일 캔버스, 아니면 확장자 라벨
   let leftEl: HTMLElement;
@@ -868,13 +930,396 @@ function updateListRowInline(pathname: string): void {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// 가상 폴더 — 트리 렌더 + 드래그&드롭 + CRUD
+// ══════════════════════════════════════════════════════════════════
+
+/** 자산 meta 의 raw folderId (폴더 존재 여부 무관). */
+function rawFolderId(it: BlobItem): string | undefined {
+  if (activeCat === 'characters') return charMetaByPath.get(it.pathname)?.folderId;
+  if (activeCat === 'maps') return mapMetaByPath.get(it.pathname)?.folderId;
+  return audioMetaByPath.get(it.pathname)?.folderId;
+}
+
+/** 자산의 유효 folderId — 가리키는 폴더가 삭제됐으면 null(미분류) 취급. */
+function assetFolderId(it: BlobItem): string | null {
+  const fid = rawFolderId(it);
+  return fid && folderById(folders, fid) ? fid : null;
+}
+
+function findItemByPath(pathname: string): BlobItem | undefined {
+  return currentItems.find((it) => it.pathname === pathname);
+}
+
+function clearDropHints(): void {
+  document.querySelectorAll('.drop-into').forEach((el) => el.classList.remove('drop-into'));
+}
+
+/** 폴더 안 자산 수 — 후손 폴더까지 재귀 합산. */
+function countInFolder(id: string, byFolder: Map<string | null, BlobItem[]>): number {
+  let n = (byFolder.get(id) ?? []).length;
+  for (const c of childFolders(folders, id)) n += countInFolder(c.id, byFolder);
+  return n;
+}
+
+/** 네트워크 재요청 없이 현재 메모리 상태(currentItems + 메타 + folders)로 리스트만 다시 그림. */
+function rerenderTree(): void {
+  const list = document.getElementById('file-list');
+  if (!list) return;
+  list.innerHTML = '';
+  renderAssetTree(list, currentItems);
+}
+
+/** 가상 폴더 트리 렌더 — 툴바 + 중첩 폴더 + 자산 + 미분류. */
+function renderAssetTree(listEl: HTMLElement, items: BlobItem[]): void {
+  listEl.appendChild(makeTreeToolbar());
+
+  // 자산을 (유효) folderId 로 버킷팅.
+  const byFolder = new Map<string | null, BlobItem[]>();
+  for (const it of items) {
+    const fid = assetFolderId(it);
+    const arr = byFolder.get(fid);
+    if (arr) arr.push(it); else byFolder.set(fid, [it]);
+  }
+
+  // 최상위 폴더 → 재귀 렌더, 그 다음 최상위(미분류) 자산.
+  for (const f of childFolders(folders, null)) renderFolderInto(listEl, f, 0, byFolder);
+  for (const it of byFolder.get(null) ?? []) listEl.appendChild(makeItem(it, 0));
+
+  if (items.length === 0 && folders.length === 0) {
+    const li = document.createElement('li');
+    li.className = 'lib-empty';
+    li.textContent = `No ${emptyLabel(activeCat)} yet. Upload above, or create a folder.`;
+    listEl.appendChild(li);
+  }
+}
+
+function renderFolderInto(
+  listEl: HTMLElement, folder: FolderNode, depth: number, byFolder: Map<string | null, BlobItem[]>,
+): void {
+  listEl.appendChild(makeFolderHeader(folder, depth, countInFolder(folder.id, byFolder)));
+  if (collapsed.has(folder.id)) return;
+  for (const child of childFolders(folders, folder.id)) renderFolderInto(listEl, child, depth + 1, byFolder);
+  for (const it of byFolder.get(folder.id) ?? []) listEl.appendChild(makeItem(it, depth + 1));
+}
+
+function makeFolderActBtn(label: string, title: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'lib-folder-act';
+  b.textContent = label;
+  b.title = title;
+  b.draggable = false;
+  b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+  return b;
+}
+
+function makeFolderHeader(folder: FolderNode, depth: number, count: number): HTMLElement {
+  const li = document.createElement('li');
+  li.className = 'lib-folder';
+  li.dataset.folderId = folder.id;
+  li.style.setProperty('--depth', String(depth));
+  const isCollapsed = collapsed.has(folder.id);
+  if (isCollapsed) li.classList.add('collapsed');
+  // 키보드/스크린리더 접근 — Enter/Space 로 펼치기/접기.
+  li.setAttribute('role', 'treeitem');
+  li.setAttribute('aria-expanded', String(!isCollapsed));
+  li.tabIndex = 0;
+
+  const caret = document.createElement('span');
+  caret.className = 'lib-folder-caret';
+  caret.textContent = isCollapsed ? '▸' : '▾';
+
+  const icon = document.createElement('span');
+  icon.className = 'lib-folder-icon';
+  icon.textContent = '📁';
+
+  const name = document.createElement('span');
+  name.className = 'lib-folder-name';
+  name.textContent = folder.name;
+
+  const cnt = document.createElement('span');
+  cnt.className = 'lib-folder-count';
+  cnt.textContent = String(count);
+
+  const toggle = (): void => {
+    if (collapsed.has(folder.id)) collapsed.delete(folder.id); else collapsed.add(folder.id);
+    saveCollapsed(activeCat);
+    rerenderTree();
+  };
+  caret.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  li.addEventListener('click', toggle);
+  li.addEventListener('keydown', (e) => {
+    if (e.target !== li) return;   // 내부 버튼의 키 입력은 그 버튼이 처리
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+  });
+
+  const actions = document.createElement('span');
+  actions.className = 'lib-folder-actions';
+  actions.append(
+    makeFolderActBtn('＋', 'New subfolder', () => void createFolderInteractive(folder.id)),
+    makeFolderActBtn('✎', 'Rename folder', () => void renameFolderInteractive(folder)),
+    makeFolderActBtn('🗑', 'Delete folder', () => void deleteFolderInteractive(folder)),
+  );
+
+  li.append(caret, icon, name, cnt, actions);
+
+  // 폴더 자체를 드래그해서 다른 폴더(또는 최상위)로 이동.
+  li.draggable = true;
+  li.addEventListener('dragstart', (e) => {
+    e.stopPropagation();
+    dragPayload = { kind: 'folder', id: folder.id };
+    li.classList.add('dragging');
+    li.closest('.lib-list')?.classList.add('drag-active');
+    if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', folder.id); }
+  });
+  li.addEventListener('dragend', () => {
+    dragPayload = null;
+    li.classList.remove('dragging');
+    li.closest('.lib-list')?.classList.remove('drag-active');
+    clearDropHints();
+  });
+
+  attachFolderDropTarget(li, folder.id);
+  return li;
+}
+
+function makeTreeToolbar(): HTMLElement {
+  const li = document.createElement('li');
+  li.className = 'lib-tree-toolbar';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'lib-newfolder-btn';
+  btn.textContent = '+ New folder';
+  btn.title = 'Create a top-level folder';
+  btn.addEventListener('click', () => void createFolderInteractive(null));
+  li.appendChild(btn);
+
+  const hint = document.createElement('span');
+  hint.className = 'lib-tree-roothint';
+  hint.textContent = 'drop here → top level';
+  li.appendChild(hint);
+
+  // 최상위 드롭 대상 (folderId = null).
+  attachFolderDropTarget(li, null);
+  return li;
+}
+
+/** el 을 folderId 안으로의 드롭 대상으로 만든다. null 이면 최상위. */
+function attachFolderDropTarget(el: HTMLElement, targetFolderId: string | null): void {
+  el.addEventListener('dragover', (e) => {
+    if (!dragPayload) return;
+    // 폴더를 자기 자신/후손으로 옮기려는 드래그는 허용 안 함 → 힌트도 안 줌.
+    if (dragPayload.kind === 'folder'
+        && (dragPayload.id === targetFolderId || wouldCycle(folders, dragPayload.id, targetFolderId))) {
+      return;
+    }
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    if (!el.classList.contains('drop-into')) {
+      clearDropHints();
+      el.classList.add('drop-into');
+    }
+  });
+  el.addEventListener('dragleave', (e) => {
+    if (e.relatedTarget && el.contains(e.relatedTarget as Node)) return;  // 자식으로 이동은 무시
+    el.classList.remove('drop-into');
+  });
+  el.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.remove('drop-into');
+    handleDropOnFolder(targetFolderId);
+  });
+}
+
+function handleDropOnFolder(targetFolderId: string | null): void {
+  const p = dragPayload;
+  dragPayload = null;
+  if (!p) return;
+  if (p.kind === 'asset') {
+    const it = findItemByPath(p.pathname);
+    if (it) void moveAssetToFolder(it, targetFolderId);
+  } else {
+    if (p.id === targetFolderId) return;
+    if (wouldCycle(folders, p.id, targetFolderId)) {
+      showToast("Can't move a folder into its own subfolder", 'err');
+      return;
+    }
+    const node = folderById(folders, p.id);
+    if (!node || node.parentId === targetFolderId) return;
+    node.parentId = targetFolderId;
+    // 대상 폴더가 접혀 있으면 펴서 옮긴 폴더가 보이게.
+    if (targetFolderId && collapsed.has(targetFolderId)) { collapsed.delete(targetFolderId); saveCollapsed(activeCat); }
+    void persistFoldersAndRefresh();
+  }
+}
+
+/** 자산 meta.json 에 folderId 를 써넣음 (refresh/toast 없는 순수 쓰기).
+ *  메타 URL/파일명은 각 카테고리의 기존 저장 규칙을 그대로 따르고,
+ *  기존 메타를 fetch 해 다른 필드(actions/name/version/...)는 보존한 채 folderId 만 갱신. */
+async function writeAssetFolderId(it: BlobItem, folderId: string | null): Promise<void> {
+  const cat = activeCat;
+  let metaUrl: string;
+  let metaName: string;
+  // 메타가 없을 때만 채워 넣을 최소 기본값 (existing 이 우선).
+  const defaults: Record<string, unknown> = {};
+
+  if (cat === 'characters') {
+    metaUrl = metaUrlForEntry(it.url, it.pathname);
+    metaName = metaFilenameFor(it.pathname);
+    const isZip = isZipEntryPath(it.pathname);
+    defaults.source = isZip ? 'lpc-zip' : 'lpc';
+    defaults.format = isZip ? 'zip' : 'single';
+    defaults.name = charBaseName(it.pathname);
+    defaults.actions = charMetaByPath.get(it.pathname)?.actions ?? [];
+  } else if (cat === 'maps') {
+    metaUrl = mapMetaUrlForEntry(it.url, it.pathname);
+    const base = mapBaseName(it.pathname);
+    metaName = isZipMapEntryPath(it.pathname) ? mapMetaFilenameFor(base) : `${base}.meta.json`;
+    defaults.name = mapMetaByPath.get(it.pathname)?.name ?? base;
+  } else {
+    const base = shortName(it.pathname).replace(/\.[^.]+$/, '');
+    metaUrl = it.url.replace(/\.[^./]+$/i, '.meta.json');
+    metaName = `${base}.meta.json`;
+    defaults.name = audioMetaByPath.get(it.pathname)?.name ?? base;
+  }
+
+  // 기존 메타를 읽어 우리가 안 건드리는 필드(version/anims/volume 등)를 보존한다.
+  // 404 = 메타 아직 없음(정상) → 빈 객체로 새로 만든다. 그 외 응답 오류/네트워크 실패에
+  // 빈 객체로 진행하면 allowOverwrite 로 멀쩡한 메타를 stub 으로 덮어써 버린다 → 중단.
+  let existing: Record<string, unknown> = {};
+  try {
+    const r = await fetch(metaUrl, { cache: 'reload' });
+    if (r.ok) existing = await r.json() as Record<string, unknown>;
+    else if (r.status !== 404) throw new Error(`meta read failed (${r.status})`);
+  } catch (e) {
+    throw new Error(`Could not read existing metadata (${(e as Error).message}) — move aborted to avoid data loss`);
+  }
+
+  const merged: Record<string, unknown> = {
+    ...defaults,
+    ...existing,
+    schema: 1,
+    savedAt: new Date().toISOString(),
+  };
+  if (folderId) merged.folderId = folderId; else delete merged.folderId;
+
+  const metaFile = new File([JSON.stringify(merged, null, 2)], metaName, { type: 'application/json' });
+  await uploadAsset(token, cat, metaFile);
+
+  // 메모리 반영 (rerenderTree 가 바로 새 그룹으로 그릴 수 있게). 엔트리가 없으면 새로 만든다
+  // — sidecar 없던 자산(레거시 PNG·메타 없는 맵/오디오)도 이동이 즉시 UI 에 반영되도록.
+  const fid = folderId ?? undefined;
+  if (cat === 'characters') {
+    const m = charMetaByPath.get(it.pathname);
+    if (m) m.folderId = fid;
+    else charMetaByPath.set(it.pathname, { actions: (merged.actions as LPCAction[] | undefined) ?? [], folderId: fid });
+  } else if (cat === 'maps') {
+    const m = mapMetaByPath.get(it.pathname);
+    if (m) m.folderId = fid;
+    else mapMetaByPath.set(it.pathname, { folderId: fid });
+  } else {
+    const m = audioMetaByPath.get(it.pathname);
+    if (m) m.folderId = fid;
+    else audioMetaByPath.set(it.pathname, { folderId: fid });
+  }
+}
+
+async function moveAssetToFolder(it: BlobItem, folderId: string | null): Promise<void> {
+  // raw 값으로 비교 — 삭제된 폴더를 가리키는 dangling folderId 를 최상위로 끌어다 놓으면
+  // (assetFolderId 로는 null===null 로 no-op 처리돼) 서버의 stale 값이 안 지워진다.
+  if ((rawFolderId(it) ?? null) === folderId) return;   // 변화 없음
+  try {
+    await writeAssetFolderId(it, folderId);
+    // 대상 폴더가 접혀 있으면 펴서 옮긴 항목이 보이게.
+    if (folderId && collapsed.has(folderId)) { collapsed.delete(folderId); saveCollapsed(activeCat); }
+    const label = folderId ? (folderById(folders, folderId)?.name ?? 'folder') : 'top level';
+    showToast(`Moved to ${label}`);
+    rerenderTree();
+  } catch (e) {
+    const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+    showToast(msg, 'err');
+  }
+}
+
+async function persistFoldersAndRefresh(): Promise<void> {
+  try {
+    await saveFolders(token, activeCat, folders);
+    rerenderTree();
+  } catch (e) {
+    const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+    showToast(msg, 'err');
+    refreshList();   // 서버 기준으로 재로드해 낙관적 변경 되돌림
+  }
+}
+
+/** 같은 부모 아래 고유한 폴더 이름을 받아온다. 충돌 시 방금 친 이름을 채운 채 다시 묻는다
+ *  (입력 유실 방지). null = 취소(또는 빈 이름). */
+function promptUniqueFolderName(
+  label: string, initial: string, parentId: string | null, exceptId?: string,
+): string | null {
+  let value = initial;
+  for (;;) {
+    const raw = prompt(label, value);
+    if (raw === null) return null;
+    const name = raw.trim();
+    if (!name) return null;
+    if (isFolderNameTaken(folders, name, parentId, exceptId)) {
+      showToast('A folder with that name already exists here', 'err');
+      value = name;   // 재입력 시 유지
+      continue;
+    }
+    return name;
+  }
+}
+
+async function createFolderInteractive(parentId: string | null): Promise<void> {
+  const name = promptUniqueFolderName(parentId ? 'New subfolder name' : 'New folder name', '', parentId);
+  if (!name) return;
+  folders.push({ id: generateAssetId(name, 'folder'), name, parentId });
+  if (parentId) { collapsed.delete(parentId); saveCollapsed(activeCat); }  // 부모 펴서 새 폴더 보이게
+  await persistFoldersAndRefresh();
+}
+
+async function renameFolderInteractive(folder: FolderNode): Promise<void> {
+  const name = promptUniqueFolderName('Rename folder', folder.name, folder.parentId, folder.id);
+  if (!name || name === folder.name) return;
+  folder.name = name;
+  await persistFoldersAndRefresh();
+}
+
+async function deleteFolderInteractive(folder: FolderNode): Promise<void> {
+  const members = currentItems.filter((it) => rawFolderId(it) === folder.id);
+  const subCount = childFolders(folders, folder.id).length;
+  if (!confirm(`Delete folder "${folder.name}"?\nAssets inside are NOT deleted — they move up one level.`)) return;
+  // 직속 하위 폴더 → 이 폴더의 부모로 승격.
+  for (const f of folders) if (f.parentId === folder.id) f.parentId = folder.parentId;
+  folders = folders.filter((f) => f.id !== folder.id);
+  collapsed.delete(folder.id);
+  saveCollapsed(activeCat);
+  try {
+    await saveFolders(token, activeCat, folders);
+    // 직속 멤버 자산 meta.folderId → 이 폴더의 부모로 재지정.
+    for (const it of members) await writeAssetFolderId(it, folder.parentId);
+    const moved: string[] = [];
+    if (members.length) moved.push(`${members.length} item(s)`);
+    if (subCount) moved.push(`${subCount} subfolder(s)`);
+    showToast(`Deleted folder${moved.length ? ` · ${moved.join(', ')} moved up` : ''}`);
+    rerenderTree();
+  } catch (e) {
+    showToast((e as Error).message, 'err');
+    refreshList();
+  }
+}
+
 function selectChar(it: BlobItem): void {
   selectedChar = it;
-  // 리스트의 선택 표시 갱신
+  // 리스트의 선택 표시 갱신 — pathname 으로 정확히 매칭 (이름은 폴더 간 중복 가능 + rename 시 불일치).
   document.querySelectorAll('.lib-item.selected').forEach((el) => el.classList.remove('selected'));
-  document.querySelectorAll('.lib-item').forEach((el) => {
-    const isSelected = (el.querySelector('.name') as HTMLElement | null)?.textContent === charBaseName(it.pathname);
-    if (isSelected) el.classList.add('selected');
+  document.querySelectorAll<HTMLElement>('.lib-item').forEach((el) => {
+    if (el.dataset.pathname === it.pathname) el.classList.add('selected');
   });
   renderDetail(it);
 }
@@ -1021,6 +1466,7 @@ function renderDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {
         anims: meta?.anims,
         customAnims: meta?.customAnims,
         originalZipUrl: meta?.originalZipUrl,
+        folderId: meta?.folderId,   // 폴더 소속 유지 (merged 가 ...existing 로 blob 엔 이미 보존)
         totalSize: meta?.totalSize,
       };
       charMetaByPath.set(it.pathname, newMeta);
@@ -1813,12 +2259,10 @@ async function renderMapPreviewFromZipUrl(canvas: HTMLCanvasElement, zipUrl: str
 
 function selectAudio(it: BlobItem): void {
   selectedAudio = it;
+  // pathname 으로 정확히 매칭 — 이름은 폴더 간 중복 가능.
   document.querySelectorAll('.lib-item.selected').forEach((el) => el.classList.remove('selected'));
-  document.querySelectorAll('.lib-item').forEach((el) => {
-    const nm = el.querySelector('.name') as HTMLElement | null;
-    if (nm && nm.textContent === (audioMetaByPath.get(it.pathname)?.name || shortName(it.pathname).replace(/\.[^.]+$/, ''))) {
-      el.classList.add('selected');
-    }
+  document.querySelectorAll<HTMLElement>('.lib-item').forEach((el) => {
+    if (el.dataset.pathname === it.pathname) el.classList.add('selected');
   });
   renderAudioDetail(it);
 }
@@ -1901,6 +2345,14 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
     saveBtn.textContent = 'Saving…';
     try {
       const fields = fieldsHost.values();
+      // 기존 메타를 fetch 해 우리가 안 건드리는 필드(folderId 등)를 보존 — char/map 핸들러와 동일 패턴.
+      // 오디오만 메모리값을 신뢰하면, 드래그 이동 직후처럼 메모리/서버가 어긋날 때 folderId 가 유실된다.
+      const metaUrl = it.url.replace(/\.[^./]+$/i, '.meta.json');
+      let existing: Record<string, unknown> = {};
+      try {
+        const r = await fetch(metaUrl, { cache: 'reload' });
+        if (r.ok) existing = await r.json() as Record<string, unknown>;
+      } catch { /* 없으면 무시 */ }
       const newMeta: AudioMeta = {
         name: nameInput.value.trim(),
         volume: parseFloat(volIn.value),
@@ -1908,9 +2360,10 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
         category: catSel.value as AudioCategory,
         memo: memoIn.value || undefined,
         fields,
+        folderId: typeof existing.folderId === 'string' ? existing.folderId : undefined,
       };
       const metaName = `${baseName}.meta.json`;
-      const body = JSON.stringify({ schema: 1, ...newMeta, savedAt: new Date().toISOString() }, null, 2);
+      const body = JSON.stringify({ ...existing, schema: 1, ...newMeta, savedAt: new Date().toISOString() }, null, 2);
       const file = new File([body], metaName, { type: 'application/json' });
       await uploadAsset(token, 'bgm', file);
       audioMetaByPath.set(it.pathname, newMeta);
