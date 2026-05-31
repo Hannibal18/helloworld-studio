@@ -11,7 +11,9 @@ import {
   detectActionsFromFile, ANIMATION_CONFIGS, FRAME_SIZE,
   type LPCAction,
 } from './lpc-detect';
-import { parseLpcZip, buildLpcZipFromAnims, isLpcZipFile, type ParsedLpcZip, type LpcCharacterJson } from './lpc-zip';
+import { parseLpcZip, buildLpcZipFromAnims, isLpcZipFile, isLpcSplitZip, type ParsedLpcZip, type LpcCharacterJson } from './lpc-zip';
+import { parseCharZip, revokeParsed, type ParsedCharImport } from '../char-import/tiled';
+import { openCharImportEditor } from '../char-import/editor';
 import { computeWaveformPeaks, type WaveformPeaks } from './waveform';
 import { parseMapZip, isMapZipFile, type ParsedMapZip } from './map-zip';
 import { tryParseMapeditorJson, type ParsedMapeditorJson } from './mapeditor-json';
@@ -3270,7 +3272,13 @@ async function handleFiles(files: FileList | File[]): Promise<void> {
     }
     if (startCat === 'characters') {
       if (isLpcZipFile(f)) {
-        await uploadCharacterZipWithModal(f);
+        // .zip — 내용으로 LPC Split-by-Animation 인지 판별.
+        if (await isLpcSplitZip(f)) {
+          await uploadCharacterZipWithModal(f);
+        } else {
+          // 비-LPC zip (PNG + Tiled 타일셋 JSON) → 매핑 에디터 → LPC bake → 업로드.
+          await uploadNonLpcCharacterZip(f);
+        }
       } else {
         await uploadCharacterWithModal(f);
       }
@@ -3331,6 +3339,41 @@ async function uploadOne(file: File, displayName: string, cat: Category, opts?: 
     }
   };
   await run();
+}
+
+/** 비-LPC 캐릭터 zip (PNG 시트 + Tiled 타일셋 JSON) 업로드 흐름.
+ *  zip 파싱 → 스튜디오와 동일한 매핑 에디터 모달 → 표준 LPC 832×3456 시트로 bake →
+ *  single-PNG 캐릭터로 업로드(uploadOne). 결과는 라이브러리·스튜디오 양쪽에서 인식된다. */
+async function uploadNonLpcCharacterZip(file: File): Promise<void> {
+  let parsed: ParsedCharImport;
+  try {
+    parsed = await parseCharZip(file);
+  } catch (e) {
+    showToast(`zip 분석 실패: ${(e as Error).message}`, 'err', 4500);
+    return;
+  }
+  // 에디터는 사용자 상호작용(모달) — 완료/취소될 때까지 기다렸다가 handleFiles 가 목록 갱신.
+  await new Promise<void>((resolve) => {
+    openCharImportEditor(parsed, (result) => {
+      void (async () => {
+        try {
+          if (result) {
+            const base = generateAssetId(result.name, 'char');   // slug + hex (이름 충돌 방지)
+            const pngFile = new File([result.blob], `${base}.png`, { type: 'image/png' });
+            await uploadOne(pngFile, result.name, 'characters', {
+              characterActions: ['walk', 'run'] as LPCAction[],
+              characterBaseName: base,
+              characterDisplayName: result.name,
+              characterBody: 'none',
+            });
+          }
+        } finally {
+          revokeParsed(parsed);
+          resolve();
+        }
+      })();
+    });
+  });
 }
 
 /** 캐릭터 업로드 모달 흐름. detect → preview + name input → user confirms → uploadOne. */

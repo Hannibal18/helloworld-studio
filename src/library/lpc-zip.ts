@@ -67,6 +67,23 @@ export function isLpcZipFile(file: File): boolean {
   return true;
 }
 
+/** ZIP 내용을 열어 LPC Split-by-Animation 구조(standard/·custom/·credits/character.json)인지 판별.
+ *  비-LPC(예: Tiled 타일셋 PNG+JSON 묶음)면 false → 매핑 에디터 흐름으로 보낸다. */
+export async function isLpcSplitZip(file: File): Promise<boolean> {
+  if (!file.name.toLowerCase().endsWith('.zip')) return false;
+  try {
+    const zip = await JSZip.loadAsync(await file.arrayBuffer());
+    let lpc = false;
+    zip.forEach((path) => {
+      if (path.includes('__MACOSX')) return;
+      if (/^(standard|custom)\//.test(path) || /(^|\/)credits\/character\.json$/.test(path)) lpc = true;
+    });
+    return lpc;
+  } catch {
+    return false;
+  }
+}
+
 /** ZIP 을 풀어서 표준/커스텀 액션 PNG 들과 character.json 을 분리. */
 export async function parseLpcZip(file: File): Promise<ParsedLpcZip> {
   const ab = await file.arrayBuffer();
