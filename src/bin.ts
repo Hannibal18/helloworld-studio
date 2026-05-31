@@ -172,14 +172,14 @@ async function importNonLpcCharacter(file: File): Promise<void> {
   }
   openCharImportEditor(parsed, (result) => {
     void (async () => {
-      if (result) await uploadCharacter(result.blob, result.name);
+      if (result) await uploadCharacter(result.blob, result.name, result.actions);
       revokeParsed(parsed);
     })();
   });
 }
 
 // baked LPC PNG + meta 를 라이브러리(Blob)에 업로드하고 빈에 즉시 추가.
-async function uploadCharacter(png: Blob, displayName: string): Promise<void> {
+async function uploadCharacter(png: Blob, displayName: string, actions: string[] = ['idle', 'walk', 'run']): Promise<void> {
   let token: string | null;
   try { token = localStorage.getItem('studio:library:token'); } catch { token = null; }
   if (!token) {
@@ -193,7 +193,7 @@ async function uploadCharacter(png: Blob, displayName: string): Promise<void> {
     // 해가 없다. 반대 순서면 PNG 만 남아 다음 부팅 때 슬러그 이름으로 잘못 표시됨.
     const meta = {
       schema: 1, source: 'custom-bake', format: 'single',
-      body: 'none', name: displayName, actions: ['walk', 'run'],
+      body: 'none', name: displayName, actions,
       detectedAt: new Date().toISOString(),
     };
     await uploadAsset(token, 'characters', new File([JSON.stringify(meta, null, 2)], `${base}.meta.json`, { type: 'application/json' }));

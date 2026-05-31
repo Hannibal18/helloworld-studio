@@ -1,11 +1,13 @@
 // 매핑된 비-LPC 시트들을 표준 832×3456 LPC 시트로 굽는다 (브라우저 canvas).
-// scripts/build-fox-lpc.mjs (Node/pngjs) 의 브라우저 포팅 — 로직 동일.
 //
-// 스튜디오/런타임 drawCharacter 는 멈춤이면 ROW_WALK[dir] col0, 이동이면 ROW_RUN[dir] col0~7 만
-// 읽는다. 따라서:
-//   - walk 행 col0   ← idle 소스 정지 포즈
-//   - walk 행 col1~8 ← 이동 사이클 (완전한 LPC 행을 위해 채움 — 편집기는 미사용)
-//   - run  행 col0~7 ← 이동 사이클 (실제 이동 모션)
+// 모델: 각 업로드 시트는 한 애니메이션(idle/walk/run)이고, 시트의 각 행에 방향(up/down/left/right)을
+// 지정한다. 그 매핑으로 LPC 표준 행에 배치:
+//   - idle  → idle 행(22~25) col0,1  (라이브러리 디테일 패널이 자동재생) + walk 행 col0 (정지 포즈)
+//   - walk  → walk 행(8~11)  col1~8  (라이브러리 "Walk" / 걷기 사이클)
+//   - run   → run  행(38~41) col0~7  (스튜디오 이동 + 라이브러리 "Run")
+//
+// 스튜디오 drawCharacter: 멈춤=walk행 col0(정적), 이동=run행 col0~7. 라이브러리 playAction:
+// 액션별 행을 cycle 로 재생(idle=22, walk=8 [1..8], run=38 [0..7]).
 
 import type { Dir } from '../lib/types';
 import type { ParsedSheet } from './tiled';
@@ -15,46 +17,41 @@ const SHEET_W = 832;   // 13 cols
 const SHEET_H = 3456;  // 54 rows
 const FOOT_DEST = 58;  // sprites.ts SOURCE_FOOT_Y
 
-// sprites.ts ROW_WALK / ROW_RUN 와 일치해야 함.
-const ROW_WALK: Record<Dir, number> = { up: 8, left: 9, down: 10, right: 11 };
-const ROW_RUN: Record<Dir, number> = { up: 38, left: 39, down: 40, right: 41 };
+// LPC 방향 행 오프셋 — up/left/down/right = base+0/1/2/3 (sprites.ts ROW_WALK 와 일치).
+const DIR_OFFSET: Record<Dir, number> = { up: 0, left: 1, down: 2, right: 3 };
+const ROW_WALK_BASE = 8;
+const ROW_IDLE_BASE = 22;  // ANIMATION_CONFIGS.idle.row
+const ROW_RUN_BASE = 38;
 export const DIRS: readonly Dir[] = ['up', 'left', 'down', 'right'];
 
-export interface SheetRoleMapping {
+export type AnimType = 'idle' | 'walk' | 'run' | 'none';
+export const ANIM_TYPES: readonly AnimType[] = ['idle', 'walk', 'run'];
+
+export interface SheetMapping {
   sheet: ParsedSheet;
-  /** 방향 → sheet.rows 의 인덱스. */
-  dirRow: Record<Dir, number>;
+  anim: AnimType;                 // 이 시트가 어떤 애니인지 (파일명 자동 + 사용자 수정)
+  rowDir: Array<Dir | null>;      // index = sheet.rows 인덱스 → 지정된 방향(없으면 null)
 }
 export interface MappingConfig {
-  idle: SheetRoleMapping;    // 정지 포즈 소스
-  moving: SheetRoleMapping;  // 이동(달리기/걷기) 사이클 소스
-  scale: number;             // 여우 확대 배율 (기본 1.5)
-  footSrc: number;           // 소스 프레임 안 발 y (기본 26)
+  sheets: SheetMapping[];
+  scale: number;                  // 확대 배율 (기본 1.5)
+  footSrc: number;                // 소스 프레임 안 발 y (기본 26)
 }
 
-/** N 슬롯에 M 프레임을 고르게 매핑(루프 위상 샘플링). 8←6 = [0,1,2,2,3,4,5,5] */
+/** N 슬롯에 M 프레임 고르게 매핑 (루프 위상 샘플링). */
 export function phaseMap(slots: number, frames: number): number[] {
   if (frames <= 0) return new Array(slots).fill(0);
   return Array.from({ length: slots }, (_, i) => Math.round((i * frames) / slots) % frames);
 }
 
-/** 시트 내 tileId → 픽셀 좌상단. */
 export function tileTopLeft(sheet: ParsedSheet, tileId: number): { sx: number; sy: number } {
-  return {
-    sx: (tileId % sheet.cols) * sheet.tileW,
-    sy: Math.floor(tileId / sheet.cols) * sheet.tileH,
-  };
+  return { sx: (tileId % sheet.cols) * sheet.tileW, sy: Math.floor(tileId / sheet.cols) * sheet.tileH };
 }
 
-/** 64×64 LPC 셀 좌상단 기준, 소스 타일을 균일 확대·발 정렬·셀 클립으로 그린다. */
+/** 64×64 LPC 셀(cellX,cellY 좌상단)에 소스 타일을 균일 확대·발 정렬·셀 클립으로 그린다. */
 export function blitTileToCell(
-  ctx: CanvasRenderingContext2D,
-  sheet: ParsedSheet,
-  tileId: number,
-  cellX: number,
-  cellY: number,
-  scale: number,
-  footSrc: number,
+  ctx: CanvasRenderingContext2D, sheet: ParsedSheet, tileId: number,
+  cellX: number, cellY: number, scale: number, footSrc: number,
 ): void {
   const { sx, sy } = tileTopLeft(sheet, tileId);
   const offX = Math.round((F_LPC - sheet.tileW * scale) / 2);
@@ -64,11 +61,27 @@ export function blitTileToCell(
   ctx.rect(cellX, cellY, F_LPC, F_LPC);
   ctx.clip();
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(
-    sheet.img, sx, sy, sheet.tileW, sheet.tileH,
-    cellX + offX, cellY + offY, sheet.tileW * scale, sheet.tileH * scale,
-  );
+  ctx.drawImage(sheet.img, sx, sy, sheet.tileW, sheet.tileH,
+    cellX + offX, cellY + offY, sheet.tileW * scale, sheet.tileH * scale);
   ctx.restore();
+}
+
+/** (애니타입, 방향) → 그 프레임 시퀀스가 있는 소스 {sheet, tileIds}. 없으면 null. */
+export function findAnimRow(cfg: MappingConfig, anim: AnimType, dir: Dir): { sheet: ParsedSheet; tileIds: number[] } | null {
+  for (const sm of cfg.sheets) {
+    if (sm.anim !== anim) continue;
+    const rowIdx = sm.rowDir.findIndex((d) => d === dir);
+    if (rowIdx >= 0 && sm.sheet.rows[rowIdx]?.animTileIds.length) {
+      return { sheet: sm.sheet, tileIds: sm.sheet.rows[rowIdx].animTileIds };
+    }
+  }
+  return null;
+}
+
+/** 실제로 매핑된 애니 종류 (meta.actions 용). */
+export function actionsPresent(cfg: MappingConfig): AnimType[] {
+  return ANIM_TYPES.filter((a) =>
+    cfg.sheets.some((sm) => sm.anim === a && sm.rowDir.some((d) => d !== null)));
 }
 
 export async function bakeLpcSheet(cfg: MappingConfig): Promise<Blob> {
@@ -78,22 +91,34 @@ export async function bakeLpcSheet(cfg: MappingConfig): Promise<Blob> {
   const ctx = canvas.getContext('2d')!;
 
   for (const dir of DIRS) {
-    const idleRow = cfg.idle.sheet.rows[cfg.idle.dirRow[dir]];
-    const moveRow = cfg.moving.sheet.rows[cfg.moving.dirRow[dir]];
-    if (!idleRow || !moveRow || idleRow.animTileIds.length === 0 || moveRow.animTileIds.length === 0) continue;
+    const off = DIR_OFFSET[dir];
+    const idleSrc = findAnimRow(cfg, 'idle', dir);
+    const walkSrc = findAnimRow(cfg, 'walk', dir);
+    const runSrc = findAnimRow(cfg, 'run', dir);
+    // 한 종류만 올려도 스튜디오/라이브러리가 비지 않도록 교차 폴백.
+    const walkCycle = walkSrc ?? runSrc;
+    const runCycle = runSrc ?? walkSrc;
+    const poseSrc = idleSrc ?? walkSrc ?? runSrc;
 
-    const wRow = ROW_WALK[dir];
-    const rRow = ROW_RUN[dir];
-    const idleFrame0 = idleRow.animTileIds[0];
-    const moveIds = moveRow.animTileIds;
-    const cycle = phaseMap(8, moveIds.length);
-
-    // walk col0 = idle 정지 포즈 (cellX = 0)
-    blitTileToCell(ctx, cfg.idle.sheet, idleFrame0, 0, wRow * F_LPC, cfg.scale, cfg.footSrc);
-    // walk col1~8 = 이동 사이클
-    cycle.forEach((fi, i) => blitTileToCell(ctx, cfg.moving.sheet, moveIds[fi], (i + 1) * F_LPC, wRow * F_LPC, cfg.scale, cfg.footSrc));
-    // run col0~7 = 이동 사이클
-    cycle.forEach((fi, i) => blitTileToCell(ctx, cfg.moving.sheet, moveIds[fi], i * F_LPC, rRow * F_LPC, cfg.scale, cfg.footSrc));
+    // walk 행 col0 = 정지 포즈
+    if (poseSrc) blitTileToCell(ctx, poseSrc.sheet, poseSrc.tileIds[0], 0, (ROW_WALK_BASE + off) * F_LPC, cfg.scale, cfg.footSrc);
+    // walk 행 col1~8 = 걷기 사이클
+    if (walkCycle) {
+      phaseMap(8, walkCycle.tileIds.length).forEach((fi, i) =>
+        blitTileToCell(ctx, walkCycle.sheet, walkCycle.tileIds[fi], (i + 1) * F_LPC, (ROW_WALK_BASE + off) * F_LPC, cfg.scale, cfg.footSrc));
+    }
+    // run 행 col0~7 = 달리기 사이클
+    if (runCycle) {
+      phaseMap(8, runCycle.tileIds.length).forEach((fi, i) =>
+        blitTileToCell(ctx, runCycle.sheet, runCycle.tileIds[fi], i * F_LPC, (ROW_RUN_BASE + off) * F_LPC, cfg.scale, cfg.footSrc));
+    }
+    // idle 행(22~25) col0,1 = 라이브러리 idle 자동재생용 (2프레임)
+    if (idleSrc) {
+      const ids = idleSrc.tileIds;
+      const f1 = ids[Math.floor(ids.length / 2)] ?? ids[0];
+      blitTileToCell(ctx, idleSrc.sheet, ids[0], 0, (ROW_IDLE_BASE + off) * F_LPC, cfg.scale, cfg.footSrc);
+      blitTileToCell(ctx, idleSrc.sheet, f1, 1 * F_LPC, (ROW_IDLE_BASE + off) * F_LPC, cfg.scale, cfg.footSrc);
+    }
   }
 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));

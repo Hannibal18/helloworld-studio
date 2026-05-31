@@ -3361,7 +3361,7 @@ async function uploadNonLpcCharacterZip(file: File): Promise<void> {
             const base = generateAssetId(result.name, 'char');   // slug + hex (이름 충돌 방지)
             const pngFile = new File([result.blob], `${base}.png`, { type: 'image/png' });
             await uploadOne(pngFile, result.name, 'characters', {
-              characterActions: ['walk', 'run'] as LPCAction[],
+              characterActions: result.actions as LPCAction[],
               characterBaseName: base,
               characterDisplayName: result.name,
               characterBody: 'none',
