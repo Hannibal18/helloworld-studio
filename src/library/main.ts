@@ -12,6 +12,7 @@ import {
   type LPCAction,
 } from './lpc-detect';
 import { parseLpcZip, buildLpcZipFromAnims, isLpcZipFile, type ParsedLpcZip, type LpcCharacterJson } from './lpc-zip';
+import { computeWaveformPeaks, type WaveformPeaks } from './waveform';
 import { parseMapZip, isMapZipFile, type ParsedMapZip } from './map-zip';
 import { tryParseMapeditorJson, type ParsedMapeditorJson } from './mapeditor-json';
 import {
@@ -218,9 +219,67 @@ const TRIM_GAP = 0.1;             // 시작/끝 최소 간격 (초).
 // 1년 캐시로 남는 걸 막는다.
 const trimCacheBust = new Map<string, number>();
 
+// 파형 — 디코드한 피크를 키(pathname@nonce)별로 캐시. 캔버스 너비가 바뀌면 재디코드 없이 다시 그림.
+const waveformCache = new Map<string, WaveformPeaks>();
+let currentWavePeaks: WaveformPeaks | null = null;   // 현재 그려진 피크 (리사이즈 시 재사용).
+let waveReqId = 0;                                    // 비동기 디코드 경쟁 방지 토큰.
+
 function previewEffectiveEnd(): number {
   const end = previewTrimEnd > 0 ? previewTrimEnd : previewDuration;
   return previewDuration > 0 ? Math.min(end, previewDuration) : end;
+}
+
+// 파형 캔버스를 현재 피크로 다시 그린다(디바이스 픽셀비 반영, 너비 기준 재집계).
+function drawWaveform(peaks: WaveformPeaks | null): void {
+  const canvas = document.getElementById('audio-trim-wave') as HTMLCanvasElement | null;
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (w <= 0 || h <= 0) return;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!peaks) return;
+  const mid = h / 2;
+  const amp = mid * 0.92;
+  const N = peaks.min.length;
+  ctx.fillStyle = '#9aa6b6';
+  for (let x = 0; x < w; x++) {
+    const b0 = Math.floor((x / w) * N);
+    const b1 = Math.max(b0 + 1, Math.floor(((x + 1) / w) * N));
+    let mn = 1, mx = -1;
+    for (let b = b0; b < b1 && b < N; b++) {
+      if (peaks.min[b] < mn) mn = peaks.min[b];
+      if (peaks.max[b] > mx) mx = peaks.max[b];
+    }
+    if (mx < mn) { mn = 0; mx = 0; }
+    const y0 = mid - mx * amp;
+    const y1 = mid - mn * amp;
+    ctx.fillRect(x, y0, 1, Math.max(1, y1 - y0));
+  }
+}
+
+// 파형 캐시 키 — 파일이 트림으로 바뀌면 nonce 가 올라 새로 디코드.
+function waveKey(pathname: string): string {
+  return pathname + '@' + (trimCacheBust.get(pathname) ?? 0);
+}
+
+// 선택한 오디오의 파형을 (캐시 우선) 비동기 디코드해 그린다. 경쟁 시 마지막 요청만 반영.
+function loadWaveformFor(it: BlobItem, srcUrl: string): void {
+  const myReq = ++waveReqId;
+  const cached = waveformCache.get(waveKey(it.pathname));
+  if (cached) { currentWavePeaks = cached; drawWaveform(cached); return; }
+  currentWavePeaks = null;
+  drawWaveform(null);              // 디코드 동안 빈 캔버스
+  void computeWaveformPeaks(srcUrl).then((peaks) => {
+    waveformCache.set(waveKey(it.pathname), peaks);
+    if (myReq !== waveReqId) return;   // 그 사이 다른 트랙으로 바뀜
+    currentWavePeaks = peaks;
+    drawWaveform(peaks);
+  }).catch(() => { /* 파형 실패는 무시 — 선택 막대만 표시 */ });
 }
 
 function fmtTime(s: number): string {
@@ -240,8 +299,14 @@ function updateTrimVisual(): void {
   if (!sel || !head || !startVal || !endVal) return;
   const end = previewEffectiveEnd();
   const pct = (t: number): number => (dur > 0 ? Math.max(0, Math.min(100, (t / dur) * 100)) : 0);
-  sel.style.left = pct(previewTrimStart) + '%';
-  sel.style.width = Math.max(0, pct(end) - pct(previewTrimStart)) + '%';
+  const startPct = pct(previewTrimStart), endPct = pct(end);
+  sel.style.left = startPct + '%';
+  sel.style.width = Math.max(0, endPct - startPct) + '%';
+  // 선택 밖(잘려나갈) 구간을 어둡게 — 맥OS 트림 느낌.
+  const dimL = document.getElementById('audio-trim-dim-left') as HTMLElement | null;
+  const dimR = document.getElementById('audio-trim-dim-right') as HTMLElement | null;
+  if (dimL) { dimL.style.left = '0'; dimL.style.width = startPct + '%'; }
+  if (dimR) { dimR.style.left = endPct + '%'; dimR.style.width = (100 - endPct) + '%'; }
   startVal.textContent = fmtTime(previewTrimStart);
   endVal.textContent = fmtTime(end);
   const player = document.getElementById('audio-player') as HTMLAudioElement | null;
@@ -2504,6 +2569,7 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
     previewDuration = 0; previewTrimStart = 0; previewTrimEnd = 0;
     setTrimEnabled(false);
     updateTrimVisual();
+    waveReqId++; currentWavePeaks = null; drawWaveform(null);  // 파형 지움
     syncLoopToggleBtn(false, false);  // 선택 없음 → 토글 비활성
     return;
   }
@@ -2513,8 +2579,10 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
 
   // 방금 덮어쓴 파일이면 캐시 우회 쿼리를 붙여 옛 오디오 대신 최신본을 로드.
   const bust = trimCacheBust.get(it.pathname);
-  player.src = bust ? it.url + (it.url.includes('?') ? '&' : '?') + 'v=' + bust : it.url;
+  const srcUrl = bust ? it.url + (it.url.includes('?') ? '&' : '?') + 'v=' + bust : it.url;
+  player.src = srcUrl;
   player.load();
+  loadWaveformFor(it, srcUrl);   // 파형 디코드(캐시) 후 그리기
 
   const meta = audioMetaByPath.get(it.pathname);
   const baseName = shortName(it.pathname).replace(/\.[^.]+$/, '');
@@ -4283,6 +4351,15 @@ ready(async () => {
   });
   audioPlayer.addEventListener('pause', updateTrimVisual);
   audioPlayer.addEventListener('seeked', updateTrimVisual);
+
+  // 패널/창 너비가 바뀌면 파형을 현재 피크로 다시 그린다(재디코드 없이). 디바운스.
+  let waveResizeTimer = 0;
+  window.addEventListener('resize', () => {
+    window.clearTimeout(waveResizeTimer);
+    waveResizeTimer = window.setTimeout(() => {
+      if (activeCat === 'bgm' && selectedAudio) { drawWaveform(currentWavePeaks); updateTrimVisual(); }
+    }, 120);
+  });
 
   // 파일 선택
   const fileIn = document.getElementById('file-input') as HTMLInputElement;

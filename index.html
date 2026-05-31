@@ -181,6 +181,9 @@
                   <button id="audio-trim-reset" class="lib-trim-reset" type="button" title="Clear selection — use the whole track">Reset</button>
                 </div>
                 <div class="lib-trim-bar" id="audio-trim-bar">
+                  <canvas class="lib-trim-wave" id="audio-trim-wave" aria-hidden="true"></canvas>
+                  <div class="lib-trim-dim lib-trim-dim-left" id="audio-trim-dim-left" aria-hidden="true"></div>
+                  <div class="lib-trim-dim lib-trim-dim-right" id="audio-trim-dim-right" aria-hidden="true"></div>
                   <div class="lib-trim-sel" id="audio-trim-sel" aria-hidden="true"></div>
                   <div class="lib-trim-playhead" id="audio-trim-playhead" aria-hidden="true"></div>
                   <input id="audio-trim-start" class="lib-trim-range" type="range" min="0" max="1" step="0.05" value="0" aria-label="Trim start" disabled />
