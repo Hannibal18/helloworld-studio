@@ -148,7 +148,8 @@
         <!-- Audio 탭: 재생기 + 메타 + 기본 볼륨/페이드 -->
         <aside class="lib-detail hidden" id="audio-detail">
           <div class="lib-detail-preview lib-audio-player">
-            <audio id="audio-player" controls preload="none"></audio>
+            <!-- preload=metadata: 제스처 없이도 duration 을 받아 트림 핸들이 바로 보이게 (preload=none 이면 자동선택 시 핸들 안 뜸) -->
+            <audio id="audio-player" controls preload="metadata"></audio>
           </div>
           <div class="lib-detail-info">
             <div id="audio-empty" class="lib-detail-empty">No audio selected</div>
@@ -182,12 +183,13 @@
                 </div>
                 <div class="lib-trim-bar" id="audio-trim-bar">
                   <canvas class="lib-trim-wave" id="audio-trim-wave" aria-hidden="true"></canvas>
+                  <div class="lib-trim-loading" id="audio-trim-loading" aria-hidden="true">Analyzing waveform…</div>
                   <div class="lib-trim-dim lib-trim-dim-left" id="audio-trim-dim-left" aria-hidden="true"></div>
                   <div class="lib-trim-dim lib-trim-dim-right" id="audio-trim-dim-right" aria-hidden="true"></div>
-                  <div class="lib-trim-sel" id="audio-trim-sel" aria-hidden="true"></div>
+                  <div class="lib-trim-region" id="audio-trim-region" aria-hidden="true"></div>
                   <div class="lib-trim-playhead" id="audio-trim-playhead" aria-hidden="true"></div>
-                  <input id="audio-trim-start" class="lib-trim-range" type="range" min="0" max="1" step="0.05" value="0" aria-label="Trim start" disabled />
-                  <input id="audio-trim-end" class="lib-trim-range" type="range" min="0" max="1" step="0.05" value="1" aria-label="Trim end" disabled />
+                  <div class="lib-trim-handle lib-trim-handle-start" id="audio-trim-handle-start" role="slider" aria-label="Trim start" tabindex="0"></div>
+                  <div class="lib-trim-handle lib-trim-handle-end" id="audio-trim-handle-end" role="slider" aria-label="Trim end" tabindex="0"></div>
                 </div>
                 <div class="lib-trim-row">
                   <button id="audio-trim-set-start" class="st-btn" type="button" title="Set start to current playback position">⏱ Start</button>

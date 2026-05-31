@@ -267,19 +267,31 @@ function waveKey(pathname: string): string {
   return pathname + '@' + (trimCacheBust.get(pathname) ?? 0);
 }
 
+function setWaveLoading(text: string | null): void {
+  const el = document.getElementById('audio-trim-loading');
+  if (!el) return;
+  if (text) { el.textContent = text; el.style.display = 'block'; }
+  else el.style.display = 'none';
+}
+
 // 선택한 오디오의 파형을 (캐시 우선) 비동기 디코드해 그린다. 경쟁 시 마지막 요청만 반영.
 function loadWaveformFor(it: BlobItem, srcUrl: string): void {
   const myReq = ++waveReqId;
   const cached = waveformCache.get(waveKey(it.pathname));
-  if (cached) { currentWavePeaks = cached; drawWaveform(cached); return; }
+  if (cached) { currentWavePeaks = cached; setWaveLoading(null); drawWaveform(cached); return; }
   currentWavePeaks = null;
-  drawWaveform(null);              // 디코드 동안 빈 캔버스
+  drawWaveform(null);
+  setWaveLoading('Analyzing waveform…');   // 디코드 동안 빈 검은 막대로 보이지 않게
   void computeWaveformPeaks(srcUrl).then((peaks) => {
     waveformCache.set(waveKey(it.pathname), peaks);
     if (myReq !== waveReqId) return;   // 그 사이 다른 트랙으로 바뀜
     currentWavePeaks = peaks;
+    setWaveLoading(null);
     drawWaveform(peaks);
-  }).catch(() => { /* 파형 실패는 무시 — 선택 막대만 표시 */ });
+  }).catch(() => {
+    if (myReq !== waveReqId) return;
+    setWaveLoading('Waveform unavailable');   // 파형만 실패 — 핸들 트림은 계속 가능
+  });
 }
 
 function fmtTime(s: number): string {
@@ -289,39 +301,80 @@ function fmtTime(s: number): string {
   return `${m}:${sec < 10 ? '0' : ''}${sec.toFixed(1)}`;
 }
 
-// 트림 막대(선택구간/플레이헤드/시간 라벨)를 현재 상태로 다시 그린다.
+// 트림 막대(가운데 구간/핸들/디밍/플레이헤드/시간 라벨)를 현재 상태로 다시 그린다.
 function updateTrimVisual(): void {
   const dur = previewDuration;
-  const sel = document.getElementById('audio-trim-sel') as HTMLElement | null;
+  const ready = dur > 0;
+  const region = document.getElementById('audio-trim-region') as HTMLElement | null;
+  const hS = document.getElementById('audio-trim-handle-start') as HTMLElement | null;
+  const hE = document.getElementById('audio-trim-handle-end') as HTMLElement | null;
+  const dimL = document.getElementById('audio-trim-dim-left') as HTMLElement | null;
+  const dimR = document.getElementById('audio-trim-dim-right') as HTMLElement | null;
   const head = document.getElementById('audio-trim-playhead') as HTMLElement | null;
   const startVal = document.getElementById('audio-trim-start-val');
   const endVal = document.getElementById('audio-trim-end-val');
-  if (!sel || !head || !startVal || !endVal) return;
+
+  // duration 모르면(=로딩 전) 핸들/구간/디밍 다 숨기고 파형만 보이게.
+  for (const el of [region, hS, hE, dimL, dimR]) if (el) el.style.display = ready ? 'block' : 'none';
+  if (startVal) startVal.textContent = fmtTime(ready ? previewTrimStart : 0);
+  if (endVal) endVal.textContent = fmtTime(ready ? previewEffectiveEnd() : 0);
+  if (!ready) { if (head) head.style.display = 'none'; return; }
+
   const end = previewEffectiveEnd();
-  const pct = (t: number): number => (dur > 0 ? Math.max(0, Math.min(100, (t / dur) * 100)) : 0);
-  const startPct = pct(previewTrimStart), endPct = pct(end);
-  sel.style.left = startPct + '%';
-  sel.style.width = Math.max(0, endPct - startPct) + '%';
-  // 선택 밖(잘려나갈) 구간을 어둡게 — 맥OS 트림 느낌.
-  const dimL = document.getElementById('audio-trim-dim-left') as HTMLElement | null;
-  const dimR = document.getElementById('audio-trim-dim-right') as HTMLElement | null;
-  if (dimL) { dimL.style.left = '0'; dimL.style.width = startPct + '%'; }
-  if (dimR) { dimR.style.left = endPct + '%'; dimR.style.width = (100 - endPct) + '%'; }
-  startVal.textContent = fmtTime(previewTrimStart);
-  endVal.textContent = fmtTime(end);
+  const pct = (t: number): number => Math.max(0, Math.min(100, (t / dur) * 100));
+  const sP = pct(previewTrimStart), eP = pct(end);
+  if (region) { region.style.left = sP + '%'; region.style.width = Math.max(0, eP - sP) + '%'; }
+  // 핸들은 항상 바 안쪽에 '완전히' 보이게 — 끝(0%/100%)에서 절반 잘려 1개처럼 보이는 문제 방지.
+  const bar = document.getElementById('audio-trim-bar');
+  const barW = bar ? bar.clientWidth : 0;
+  const halfPct = barW > 0 ? (8 / barW) * 100 : 2.5;   // 핸들 절반폭(≈8px) 만큼 가장자리에서 띄움
+  if (hS) {
+    hS.style.left = Math.max(halfPct, Math.min(100 - halfPct, sP)) + '%';
+    hS.setAttribute('aria-valuemin', '0'); hS.setAttribute('aria-valuemax', dur.toFixed(2));
+    hS.setAttribute('aria-valuenow', previewTrimStart.toFixed(2)); hS.setAttribute('aria-valuetext', fmtTime(previewTrimStart));
+  }
+  if (hE) {
+    hE.style.left = Math.max(halfPct, Math.min(100 - halfPct, eP)) + '%';
+    hE.setAttribute('aria-valuemin', '0'); hE.setAttribute('aria-valuemax', dur.toFixed(2));
+    hE.setAttribute('aria-valuenow', end.toFixed(2)); hE.setAttribute('aria-valuetext', fmtTime(end));
+  }
+  if (dimL) { dimL.style.left = '0'; dimL.style.width = sP + '%'; }
+  if (dimR) { dimR.style.left = eP + '%'; dimR.style.width = (100 - eP) + '%'; }
   const player = document.getElementById('audio-player') as HTMLAudioElement | null;
-  if (player && dur > 0) {
+  if (head && player) {
     head.style.display = 'block';
     head.style.left = pct(player.currentTime) + '%';
-  } else {
-    head.style.display = 'none';
   }
 }
 
-function setTrimEnabled(on: boolean): void {
-  ['audio-trim-start', 'audio-trim-end', 'audio-trim-set-start', 'audio-trim-set-end', 'audio-trim-reset', 'audio-trim-play']
+// 실제로 잘릴 구간(처음/끝에서 충분히 안쪽)이 선택됐는지 — Trim & save 활성 조건.
+function isRealTrim(): boolean {
+  if (previewDuration <= 0) return false;
+  const end = previewEffectiveEnd();
+  const cuts = previewTrimStart > 0.05 || end < previewDuration - 0.05;
+  return cuts && (end - previewTrimStart) >= TRIM_GAP;
+}
+function updateApplyTrimState(): void {
+  const btn = document.getElementById('audio-trim-apply') as HTMLButtonElement | null;
+  if (btn) btn.disabled = !isRealTrim();
+}
+// 자를 구간 setter — start < end 최소 간격 유지 + 화면/버튼 동기화. (드래그·버튼 공용)
+function setPreviewTrimStart(t: number): void {
+  if (previewDuration <= 0) return;
+  previewTrimStart = Math.max(0, Math.min(t, previewEffectiveEnd() - TRIM_GAP));
+  updateTrimVisual(); updateApplyTrimState();
+}
+function setPreviewTrimEnd(t: number): void {
+  if (previewDuration <= 0) return;
+  previewTrimEnd = Math.min(previewDuration, Math.max(t, previewTrimStart + TRIM_GAP));
+  updateTrimVisual(); updateApplyTrimState();
+}
+
+// 트림 보조 버튼(현재위치로 설정/리셋/구간재생) 활성 토글. (드래그 핸들은 updateTrimVisual 이 표시 제어)
+function setTrimButtonsEnabled(on: boolean): void {
+  ['audio-trim-set-start', 'audio-trim-set-end', 'audio-trim-reset', 'audio-trim-play']
     .forEach((id) => {
-      const el = document.getElementById(id) as HTMLInputElement | HTMLButtonElement | null;
+      const el = document.getElementById(id) as HTMLButtonElement | null;
       if (el) el.disabled = !on;
     });
 }
@@ -2567,9 +2620,10 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
     player.onloadedmetadata = null;
     previewLoop = false;
     previewDuration = 0; previewTrimStart = 0; previewTrimEnd = 0;
-    setTrimEnabled(false);
+    setTrimButtonsEnabled(false);
+    updateApplyTrimState();
     updateTrimVisual();
-    waveReqId++; currentWavePeaks = null; drawWaveform(null);  // 파형 지움
+    waveReqId++; currentWavePeaks = null; setWaveLoading(null); drawWaveform(null);  // 파형 지움
     syncLoopToggleBtn(false, false);  // 선택 없음 → 토글 비활성
     return;
   }
@@ -2603,13 +2657,11 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
   memoIn.value = initialMemo;
 
   // ── 자를 구간(in/out) — 저장값이 아니라 매 선택마다 전체로 초기화. duration 로드 후 확정. ──
-  const trimStartRange = document.getElementById('audio-trim-start') as HTMLInputElement;
-  const trimEndRange = document.getElementById('audio-trim-end') as HTMLInputElement;
   const applyTrimBtn = document.getElementById('audio-trim-apply') as HTMLButtonElement;
   previewDuration = 0;
   previewTrimStart = 0;
   previewTrimEnd = 0;
-  setTrimEnabled(false);          // duration 로드 전엔 조작 불가
+  setTrimButtonsEnabled(false);   // duration 로드 전엔 보조 버튼 비활성
   applyTrimBtn.disabled = true;   // 실제 잘릴 구간이 선택돼야 활성
   applyTrimBtn.textContent = '✂ Trim & save';   // 이전 'Trimming…' 흔적 리셋
   updateTrimVisual();
@@ -2620,10 +2672,9 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
     previewDuration = dur;
     previewTrimStart = 0;
     previewTrimEnd = dur;
-    trimStartRange.max = String(dur); trimStartRange.value = '0';
-    trimEndRange.max = String(dur);   trimEndRange.value = String(dur);
-    setTrimEnabled(true);
+    setTrimButtonsEnabled(true);
     updateTrimVisual();
+    updateApplyTrimState();
   }
   player.onloadedmetadata = initTrimFromDuration;
   if (Number.isFinite(player.duration) && player.duration > 0) initTrimFromDuration();
@@ -2659,41 +2710,7 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
   };
   memoIn.oninput = updateSaveState;
 
-  // ── 트림 컨트롤 핸들러 (start < end, 최소 간격 유지) ──
-  // 실제로 잘릴 구간(처음/끝에서 충분히 안쪽)이 선택됐는지 — Trim & save 활성 조건.
-  function isRealTrim(): boolean {
-    if (previewDuration <= 0) return false;
-    const end = previewEffectiveEnd();
-    const cuts = previewTrimStart > 0.05 || end < previewDuration - 0.05;
-    return cuts && (end - previewTrimStart) >= TRIM_GAP;
-  }
-  function updateApplyTrimState(): void { applyTrimBtn.disabled = !isRealTrim(); }
-  function setTrimStart(t: number): void {
-    if (previewDuration <= 0) return;
-    previewTrimStart = Math.max(0, Math.min(t, previewEffectiveEnd() - TRIM_GAP));
-    trimStartRange.value = String(previewTrimStart);
-    updateTrimVisual(); updateApplyTrimState();
-  }
-  function setTrimEnd(t: number): void {
-    if (previewDuration <= 0) return;
-    previewTrimEnd = Math.min(previewDuration, Math.max(t, previewTrimStart + TRIM_GAP));
-    trimEndRange.value = String(previewTrimEnd);
-    updateTrimVisual(); updateApplyTrimState();
-  }
-  trimStartRange.oninput = () => setTrimStart(parseFloat(trimStartRange.value));
-  trimEndRange.oninput = () => setTrimEnd(parseFloat(trimEndRange.value));
-  (document.getElementById('audio-trim-set-start') as HTMLButtonElement).onclick = () => setTrimStart(player.currentTime);
-  (document.getElementById('audio-trim-set-end') as HTMLButtonElement).onclick = () => setTrimEnd(player.currentTime);
-  (document.getElementById('audio-trim-reset') as HTMLButtonElement).onclick = () => {
-    previewTrimStart = 0; previewTrimEnd = previewDuration;
-    trimStartRange.value = '0'; trimEndRange.value = String(previewDuration);
-    updateTrimVisual(); updateApplyTrimState();
-  };
-  (document.getElementById('audio-trim-play') as HTMLButtonElement).onclick = () => {
-    if (previewDuration <= 0) return;
-    try { player.currentTime = previewTrimStart; } catch { /* 일부 환경 throw */ }
-    void player.play().catch(() => { /* autoplay 차단 */ });
-  };
+  // 자를 구간 조작(드래그 핸들 / 보조 버튼 / 클릭 seek)은 init 에서 1회 부착 — 모듈 상태를 읽는다.
 
   // ── 파괴적 트림: 구간만 남겨 재인코딩 → 원본 파일 교체 ──
   applyTrimBtn.onclick = async (): Promise<void> => {
@@ -2716,7 +2733,7 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
     applyTrimBtn.disabled = true;
     const prevLabel = applyTrimBtn.textContent;
     applyTrimBtn.textContent = 'Trimming…';
-    setTrimEnabled(false);
+    setTrimButtonsEnabled(false);
     try {
       // lamejs(MP3 인코더)는 무거우니 실제 트림할 때만 동적 로드.
       const { trimAudioToFile } = await import('./audioTrim');
@@ -2738,7 +2755,7 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
       const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
       showToast(`Trim failed — ${msg}`, 'err', 3500);
       applyTrimBtn.textContent = prevLabel;
-      setTrimEnabled(true);
+      setTrimButtonsEnabled(true);
       updateApplyTrimState();
     }
   };
@@ -4351,6 +4368,89 @@ ready(async () => {
   });
   audioPlayer.addEventListener('pause', updateTrimVisual);
   audioPlayer.addEventListener('seeked', updateTrimVisual);
+  // 방어선: loadedmetadata 를 놓쳐도 duration 이 확정되면 트림 구간/핸들을 켠다.
+  audioPlayer.addEventListener('durationchange', () => {
+    if (previewDuration <= 0 && Number.isFinite(audioPlayer.duration) && audioPlayer.duration > 0) {
+      previewDuration = audioPlayer.duration;
+      previewTrimStart = 0;
+      previewTrimEnd = audioPlayer.duration;
+      setTrimButtonsEnabled(true);
+      updateTrimVisual();
+      updateApplyTrimState();
+    }
+  });
+
+  // ── 트림 바: 파형 리사이즈 + 드래그 핸들 + 클릭 seek + 보조 버튼 (1회 부착) ──
+  const trimBar = document.getElementById('audio-trim-bar');
+  // 바가 실제 크기를 가질 때(패널 표시/리사이즈) 파형을 다시 그린다 — width 0 타이밍 문제 해결.
+  if (trimBar && 'ResizeObserver' in window) {
+    const ro = new ResizeObserver(() => { drawWaveform(currentWavePeaks); updateTrimVisual(); });
+    ro.observe(trimBar);
+  }
+  // 바 좌표 → 시간(초).
+  const timeFromClientX = (clientX: number): number => {
+    if (!trimBar || previewDuration <= 0) return 0;
+    const r = trimBar.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, clientX - r.left));
+    return r.width > 0 ? (x / r.width) * previewDuration : 0;
+  };
+  // 핸들 드래그 (pointer capture 로 바깥까지 추적).
+  const attachHandleDrag = (id: string, kind: 'start' | 'end'): void => {
+    const h = document.getElementById(id);
+    if (!h) return;
+    h.addEventListener('pointerdown', (e) => {
+      if (previewDuration <= 0) return;
+      e.preventDefault(); e.stopPropagation();
+      try { h.setPointerCapture(e.pointerId); } catch { /* noop */ }
+      const move = (ev: PointerEvent): void => {
+        const t = timeFromClientX(ev.clientX);
+        if (kind === 'start') setPreviewTrimStart(t); else setPreviewTrimEnd(t);
+      };
+      const up = (): void => {
+        h.removeEventListener('pointermove', move);
+        h.removeEventListener('pointerup', up);
+        h.removeEventListener('pointercancel', up);
+      };
+      h.addEventListener('pointermove', move);
+      h.addEventListener('pointerup', up);
+      h.addEventListener('pointercancel', up);
+    });
+    // 키보드 ← → 로 미세 조정 (Shift = 1초, 기본 0.1초).
+    h.addEventListener('keydown', (e) => {
+      if (previewDuration <= 0) return;
+      const step = (e as KeyboardEvent).shiftKey ? 1 : 0.1;
+      let d = 0;
+      if (e.key === 'ArrowLeft') d = -step;
+      else if (e.key === 'ArrowRight') d = step;
+      else return;
+      e.preventDefault();
+      if (kind === 'start') setPreviewTrimStart(previewTrimStart + d);
+      else setPreviewTrimEnd(previewEffectiveEnd() + d);
+    });
+  };
+  attachHandleDrag('audio-trim-handle-start', 'start');
+  attachHandleDrag('audio-trim-handle-end', 'end');
+  // 파형 빈 곳 클릭 → 플레이헤드 이동(스크럽). 핸들 클릭은 위에서 가로챔.
+  trimBar?.addEventListener('pointerdown', (e) => {
+    if (previewDuration <= 0) return;
+    if ((e.target as HTMLElement).closest('.lib-trim-handle')) return;
+    const t = Math.max(0, Math.min(previewDuration, timeFromClientX(e.clientX)));
+    try { audioPlayer.currentTime = t; } catch { /* noop */ }
+    updateTrimVisual();
+  });
+  // 보조 버튼: 현재 재생위치를 시작/끝으로 · 리셋 · 구간 재생.
+  document.getElementById('audio-trim-set-start')?.addEventListener('click', () => setPreviewTrimStart(audioPlayer.currentTime));
+  document.getElementById('audio-trim-set-end')?.addEventListener('click', () => setPreviewTrimEnd(audioPlayer.currentTime));
+  document.getElementById('audio-trim-reset')?.addEventListener('click', () => {
+    if (previewDuration <= 0) return;
+    previewTrimStart = 0; previewTrimEnd = previewDuration;
+    updateTrimVisual(); updateApplyTrimState();
+  });
+  document.getElementById('audio-trim-play')?.addEventListener('click', () => {
+    if (previewDuration <= 0) return;
+    try { audioPlayer.currentTime = previewTrimStart; } catch { /* noop */ }
+    void audioPlayer.play().catch(() => { /* autoplay 차단 */ });
+  });
 
   // 패널/창 너비가 바뀌면 파형을 현재 피크로 다시 그린다(재디코드 없이). 디바운스.
   let waveResizeTimer = 0;
