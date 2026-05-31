@@ -206,6 +206,61 @@ let sortKey: LibSortKey = ((): LibSortKey => {
 })();
 let lastRenderedAudioPath: string | null = null;
 
+// ── 오디오 미리듣기 재생 상태 (audio-player 의 영속 리스너가 참조) ──────────
+//   트림은 '자를 구간'을 귀로 확인하기 위한 일시 선택 — 저장값이 아니라 매 선택마다 전체로 초기화.
+//   native loop 대신 직접 구간 반복을 관리해야 선택 구간만 들려줄 수 있다.
+let previewLoop = false;          // 🔁 / 'Loop by default' 와 연동.
+let previewDuration = 0;          // 메타데이터 로드 후 채워짐. 0 = 아직 모름.
+let previewTrimStart = 0;         // 자를 구간 시작 (초).
+let previewTrimEnd = 0;           // 자를 구간 끝 (초). previewDuration 이면 '끝까지'.
+const TRIM_GAP = 0.1;             // 시작/끝 최소 간격 (초).
+// 파일을 덮어쓴 직후 미리듣기 캐시 우회용 nonce (pathname → 버전). 같은 URL 의 옛 오디오가
+// 1년 캐시로 남는 걸 막는다.
+const trimCacheBust = new Map<string, number>();
+
+function previewEffectiveEnd(): number {
+  const end = previewTrimEnd > 0 ? previewTrimEnd : previewDuration;
+  return previewDuration > 0 ? Math.min(end, previewDuration) : end;
+}
+
+function fmtTime(s: number): string {
+  if (!Number.isFinite(s) || s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  const sec = s - m * 60;
+  return `${m}:${sec < 10 ? '0' : ''}${sec.toFixed(1)}`;
+}
+
+// 트림 막대(선택구간/플레이헤드/시간 라벨)를 현재 상태로 다시 그린다.
+function updateTrimVisual(): void {
+  const dur = previewDuration;
+  const sel = document.getElementById('audio-trim-sel') as HTMLElement | null;
+  const head = document.getElementById('audio-trim-playhead') as HTMLElement | null;
+  const startVal = document.getElementById('audio-trim-start-val');
+  const endVal = document.getElementById('audio-trim-end-val');
+  if (!sel || !head || !startVal || !endVal) return;
+  const end = previewEffectiveEnd();
+  const pct = (t: number): number => (dur > 0 ? Math.max(0, Math.min(100, (t / dur) * 100)) : 0);
+  sel.style.left = pct(previewTrimStart) + '%';
+  sel.style.width = Math.max(0, pct(end) - pct(previewTrimStart)) + '%';
+  startVal.textContent = fmtTime(previewTrimStart);
+  endVal.textContent = fmtTime(end);
+  const player = document.getElementById('audio-player') as HTMLAudioElement | null;
+  if (player && dur > 0) {
+    head.style.display = 'block';
+    head.style.left = pct(player.currentTime) + '%';
+  } else {
+    head.style.display = 'none';
+  }
+}
+
+function setTrimEnabled(on: boolean): void {
+  ['audio-trim-start', 'audio-trim-end', 'audio-trim-set-start', 'audio-trim-set-end', 'audio-trim-reset', 'audio-trim-play']
+    .forEach((id) => {
+      const el = document.getElementById(id) as HTMLInputElement | HTMLButtonElement | null;
+      if (el) el.disabled = !on;
+    });
+}
+
 function showToast(msg: string, kind: 'ok' | 'err' = 'ok', ms = 2200): void {
   const el = document.getElementById('toast');
   if (!el) return;
@@ -463,6 +518,10 @@ function setContentMode(): void {
   audioDetail.classList.toggle('hidden', activeCat !== 'bgm');
   content.classList.add('has-detail');   // 모든 카테고리에 detail 표시
 
+  // 미리듣기 반복 토글은 오디오 탭에서만 노출. 선택 전엔 비활성(renderAudioDetail 에서 활성화).
+  const loopBtn = document.getElementById('lib-loop-toggle');
+  if (loopBtn) loopBtn.classList.toggle('hidden', activeCat !== 'bgm');
+
   if (activeCat !== 'characters') {
     selectedChar = null;
     stopAnimation();
@@ -473,6 +532,16 @@ function setContentMode(): void {
     const ap = document.getElementById('audio-player') as HTMLAudioElement | null;
     if (ap) ap.pause();
   }
+}
+
+// 리스트바의 🔁 미리듣기 반복 버튼을 현재 상태에 맞춰 갱신.
+//   on: 반복 켜짐 여부 (active 클래스) · enabled: 선택된 오디오가 있어 조작 가능한지.
+function syncLoopToggleBtn(on: boolean, enabled = true): void {
+  const btn = document.getElementById('lib-loop-toggle') as HTMLButtonElement | null;
+  if (!btn) return;
+  btn.classList.toggle('active', on && enabled);
+  btn.disabled = !enabled;
+  btn.setAttribute('aria-pressed', on && enabled ? 'true' : 'false');
 }
 
 async function refreshList(): Promise<void> {
@@ -2398,6 +2467,10 @@ function selectAudio(it: BlobItem): void {
     if (el.dataset.pathname === it.pathname) el.classList.add('selected');
   });
   renderAudioDetail(it);
+  // 행을 클릭해 연 경우(사용자 제스처) 바로 반복 재생. 반복 여부는 previewLoop(🔁/Loop by default, 기본 ON).
+  // 초기 자동선택처럼 제스처가 없는 경로에선 브라우저 autoplay 정책이 조용히 막아줘 페이지 로드 시 안 울린다.
+  const player = document.getElementById('audio-player') as HTMLAudioElement;
+  void player.play().catch(() => { /* autoplay 차단 — 무시 */ });
 }
 
 function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean } = {}): void {
@@ -2425,13 +2498,22 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
     emptyEl.classList.remove('hidden');
     formEl.classList.add('hidden');
     player.src = '';
+    player.loop = false;
+    player.onloadedmetadata = null;
+    previewLoop = false;
+    previewDuration = 0; previewTrimStart = 0; previewTrimEnd = 0;
+    setTrimEnabled(false);
+    updateTrimVisual();
+    syncLoopToggleBtn(false, false);  // 선택 없음 → 토글 비활성
     return;
   }
   lastRenderedAudioPath = it.pathname;
   emptyEl.classList.add('hidden');
   formEl.classList.remove('hidden');
 
-  player.src = it.url;
+  // 방금 덮어쓴 파일이면 캐시 우회 쿼리를 붙여 옛 오디오 대신 최신본을 로드.
+  const bust = trimCacheBust.get(it.pathname);
+  player.src = bust ? it.url + (it.url.includes('?') ? '&' : '?') + 'v=' + bust : it.url;
   player.load();
 
   const meta = audioMetaByPath.get(it.pathname);
@@ -2446,7 +2528,37 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
   volVal.textContent = initialVol.toFixed(2);
   catSel.value = initialCat;
   loopIn.checked = initialLoop;
+  // 미리듣기는 native loop 대신 직접 구간 반복으로 관리(선택 구간만 들려줌). 'Loop by default'/🔁 와 연동.
+  previewLoop = initialLoop;
+  player.loop = false;
+  syncLoopToggleBtn(initialLoop);
   memoIn.value = initialMemo;
+
+  // ── 자를 구간(in/out) — 저장값이 아니라 매 선택마다 전체로 초기화. duration 로드 후 확정. ──
+  const trimStartRange = document.getElementById('audio-trim-start') as HTMLInputElement;
+  const trimEndRange = document.getElementById('audio-trim-end') as HTMLInputElement;
+  const applyTrimBtn = document.getElementById('audio-trim-apply') as HTMLButtonElement;
+  previewDuration = 0;
+  previewTrimStart = 0;
+  previewTrimEnd = 0;
+  setTrimEnabled(false);          // duration 로드 전엔 조작 불가
+  applyTrimBtn.disabled = true;   // 실제 잘릴 구간이 선택돼야 활성
+  applyTrimBtn.textContent = '✂ Trim & save';   // 이전 'Trimming…' 흔적 리셋
+  updateTrimVisual();
+
+  function initTrimFromDuration(): void {
+    const dur = player.duration;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    previewDuration = dur;
+    previewTrimStart = 0;
+    previewTrimEnd = dur;
+    trimStartRange.max = String(dur); trimStartRange.value = '0';
+    trimEndRange.max = String(dur);   trimEndRange.value = String(dur);
+    setTrimEnabled(true);
+    updateTrimVisual();
+  }
+  player.onloadedmetadata = initTrimFromDuration;
+  if (Number.isFinite(player.duration) && player.duration > 0) initTrimFromDuration();
   wireDetailFolder('audio-folder', it);
   subEl.textContent = `${fmtSize(it.size)} · ${new Date(it.uploadedAt).toLocaleDateString()}`;
   saveBtn.disabled = true;
@@ -2471,8 +2583,97 @@ function renderAudioDetail(it: BlobItem | null, opts: { preserveDirty?: boolean 
   nameInput.oninput = updateSaveState;
   volIn.oninput = () => { volVal.textContent = parseFloat(volIn.value).toFixed(2); updateSaveState(); };
   catSel.onchange = updateSaveState;
-  loopIn.onchange = updateSaveState;
+  // 체크박스 ↔ 미리듣기 구간반복 ↔ 리스트바 🔁 버튼을 모두 한 설정으로 묶는다.
+  loopIn.onchange = () => {
+    previewLoop = loopIn.checked;
+    syncLoopToggleBtn(loopIn.checked);
+    updateSaveState();
+  };
   memoIn.oninput = updateSaveState;
+
+  // ── 트림 컨트롤 핸들러 (start < end, 최소 간격 유지) ──
+  // 실제로 잘릴 구간(처음/끝에서 충분히 안쪽)이 선택됐는지 — Trim & save 활성 조건.
+  function isRealTrim(): boolean {
+    if (previewDuration <= 0) return false;
+    const end = previewEffectiveEnd();
+    const cuts = previewTrimStart > 0.05 || end < previewDuration - 0.05;
+    return cuts && (end - previewTrimStart) >= TRIM_GAP;
+  }
+  function updateApplyTrimState(): void { applyTrimBtn.disabled = !isRealTrim(); }
+  function setTrimStart(t: number): void {
+    if (previewDuration <= 0) return;
+    previewTrimStart = Math.max(0, Math.min(t, previewEffectiveEnd() - TRIM_GAP));
+    trimStartRange.value = String(previewTrimStart);
+    updateTrimVisual(); updateApplyTrimState();
+  }
+  function setTrimEnd(t: number): void {
+    if (previewDuration <= 0) return;
+    previewTrimEnd = Math.min(previewDuration, Math.max(t, previewTrimStart + TRIM_GAP));
+    trimEndRange.value = String(previewTrimEnd);
+    updateTrimVisual(); updateApplyTrimState();
+  }
+  trimStartRange.oninput = () => setTrimStart(parseFloat(trimStartRange.value));
+  trimEndRange.oninput = () => setTrimEnd(parseFloat(trimEndRange.value));
+  (document.getElementById('audio-trim-set-start') as HTMLButtonElement).onclick = () => setTrimStart(player.currentTime);
+  (document.getElementById('audio-trim-set-end') as HTMLButtonElement).onclick = () => setTrimEnd(player.currentTime);
+  (document.getElementById('audio-trim-reset') as HTMLButtonElement).onclick = () => {
+    previewTrimStart = 0; previewTrimEnd = previewDuration;
+    trimStartRange.value = '0'; trimEndRange.value = String(previewDuration);
+    updateTrimVisual(); updateApplyTrimState();
+  };
+  (document.getElementById('audio-trim-play') as HTMLButtonElement).onclick = () => {
+    if (previewDuration <= 0) return;
+    try { player.currentTime = previewTrimStart; } catch { /* 일부 환경 throw */ }
+    void player.play().catch(() => { /* autoplay 차단 */ });
+  };
+
+  // ── 파괴적 트림: 구간만 남겨 재인코딩 → 원본 파일 교체 ──
+  applyTrimBtn.onclick = async (): Promise<void> => {
+    if (!isRealTrim()) return;
+    const start = previewTrimStart;
+    const end = previewEffectiveEnd();
+    const origName = shortName(it.pathname);                 // e.g. "track1.mp3"
+    const srcExt = (origName.split('.').pop() ?? 'mp3').toLowerCase();
+    const outExt: 'mp3' | 'wav' = srcExt === 'wav' ? 'wav' : 'mp3';  // 인코딩 가능 포맷
+    const outName = `${baseName}.${outExt}`;                 // 같은 base → mp3/wav 면 같은 경로 = 덮어쓰기
+    const ok = confirm(
+      `Trim "${origName}" to ${fmtTime(start)}–${fmtTime(end)} `
+      + `(from ${fmtTime(previewDuration)})?\n\n`
+      + 'This permanently replaces the original file and cannot be undone.'
+      + (outExt !== srcExt ? `\n\nFormat will change ${srcExt} → ${outExt}.` : ''),
+    );
+    if (!ok) return;
+
+    player.pause();
+    applyTrimBtn.disabled = true;
+    const prevLabel = applyTrimBtn.textContent;
+    applyTrimBtn.textContent = 'Trimming…';
+    setTrimEnabled(false);
+    try {
+      // lamejs(MP3 인코더)는 무거우니 실제 트림할 때만 동적 로드.
+      const { trimAudioToFile } = await import('./audioTrim');
+      const srcUrl = it.url;
+      const file = await trimAudioToFile(srcUrl, start, end, outExt, outName);
+      const newBlob = await uploadAsset(token, 'bgm', file);
+      // 확장자가 바뀌어 경로가 달라지면 옛 파일 삭제(메타 sidecar 는 base 기준이라 유지됨).
+      if (newBlob.pathname !== it.pathname) {
+        try { await deleteAsset(token, it.url); } catch { /* 옛 파일 삭제 실패는 치명적 아님 */ }
+      }
+      trimCacheBust.set(newBlob.pathname, Date.now());        // 미리듣기 캐시 우회
+      showToast('Trimmed & saved');
+      // 목록/사이즈 갱신 후, 잘린 파일을 다시 선택해 미리듣기를 최신본으로.
+      selectedAudio = null;
+      await refreshList();
+      const fresh = currentItems.find((i) => i.pathname === newBlob.pathname);
+      if (fresh) selectAudio(fresh);
+    } catch (e) {
+      const msg = e instanceof AuthError ? 'Auth expired — refresh' : (e as Error).message;
+      showToast(`Trim failed — ${msg}`, 'err', 3500);
+      applyTrimBtn.textContent = prevLabel;
+      setTrimEnabled(true);
+      updateApplyTrimState();
+    }
+  };
 
   saveBtn.onclick = async (): Promise<void> => {
     saveBtn.disabled = true;
@@ -4047,6 +4248,41 @@ ready(async () => {
     for (const f of folders) collapsed.add(f.id);
     saveCollapsed(activeCat); rerenderTree();
   });
+  // 🔁 미리듣기 반복 토글 — 디테일 패널의 'Loop by default' 체크박스와 같은 설정을 가리킨다.
+  //   체크박스를 토글 + change 이벤트로 위임 → 한 핸들러가 플레이어/버튼/dirty 상태를 일괄 갱신.
+  document.getElementById('lib-loop-toggle')!.addEventListener('click', () => {
+    if (!selectedAudio) return;
+    const loopIn = document.getElementById('audio-loop') as HTMLInputElement;
+    loopIn.checked = !loopIn.checked;
+    loopIn.dispatchEvent(new Event('change'));
+  });
+
+  // ── 미리듣기 플레이어: 트림 구간 경계 처리 + 플레이헤드 (리스너는 1회만 부착) ──
+  const audioPlayer = document.getElementById('audio-player') as HTMLAudioElement;
+  const onPreviewBoundary = (): void => {
+    if (previewDuration <= 0) return;
+    if (previewLoop) {
+      try { audioPlayer.currentTime = previewTrimStart; } catch { /* noop */ }
+      void audioPlayer.play().catch(() => { /* noop */ });
+    } else {
+      audioPlayer.pause();
+    }
+  };
+  audioPlayer.addEventListener('timeupdate', () => {
+    if (previewDuration > 0 && audioPlayer.currentTime >= previewEffectiveEnd() - 0.03) onPreviewBoundary();
+    updateTrimVisual();
+  });
+  audioPlayer.addEventListener('ended', onPreviewBoundary);
+  audioPlayer.addEventListener('play', () => {
+    // 재생 시작점이 트림 구간 밖이면 시작점으로 스냅 (구간만 들려주기).
+    if (previewDuration > 0 && (audioPlayer.currentTime < previewTrimStart - 0.1
+        || audioPlayer.currentTime >= previewEffectiveEnd() - 0.03)) {
+      try { audioPlayer.currentTime = previewTrimStart; } catch { /* noop */ }
+    }
+    updateTrimVisual();
+  });
+  audioPlayer.addEventListener('pause', updateTrimVisual);
+  audioPlayer.addEventListener('seeked', updateTrimVisual);
 
   // 파일 선택
   const fileIn = document.getElementById('file-input') as HTMLInputElement;

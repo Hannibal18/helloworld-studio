@@ -400,6 +400,75 @@ html, body {
   color: var(--text-dim);
 }
 
+/* ── 오디오 트림 (비파괴 in/out) ─────────────────────────────── */
+.lib-trim-field { gap: 8px !important; }
+.lib-trim-head {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.lib-trim-reset {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-mute); font: inherit; font-size: var(--fs-xs);
+  padding: 0; text-decoration: underline;
+}
+.lib-trim-reset:hover { color: var(--text); }
+/* 두 개의 range 를 겹쳐 dual-handle 슬라이더를 만든다 — 트랙은 입력 안 받고 thumb 만 받는다. */
+.lib-trim-bar {
+  position: relative; height: 26px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.lib-trim-sel {
+  position: absolute; top: 0; bottom: 0;
+  background: var(--accent-bg);
+  border-left: 2px solid var(--accent); border-right: 2px solid var(--accent);
+  pointer-events: none;
+}
+.lib-trim-playhead {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: var(--text); opacity: 0.7;
+  pointer-events: none; display: none;
+}
+.lib-trim-range {
+  position: absolute; left: 0; top: 0;
+  width: 100%; height: 100%; margin: 0;
+  -webkit-appearance: none; appearance: none;
+  background: none; pointer-events: none;
+}
+.lib-trim-range:disabled { opacity: 0.5; }
+.lib-trim-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 24px; border-radius: 3px;
+  background: var(--accent); border: 1px solid var(--bg);
+  cursor: ew-resize; pointer-events: auto;
+}
+.lib-trim-range::-moz-range-thumb {
+  width: 12px; height: 24px; border-radius: 3px;
+  background: var(--accent); border: 1px solid var(--bg);
+  cursor: ew-resize; pointer-events: auto;
+}
+.lib-trim-range::-webkit-slider-runnable-track { background: none; }
+.lib-trim-range::-moz-range-track { background: none; }
+.lib-trim-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.lib-trim-time {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.lib-trim-play { width: 100%; }
+.lib-trim-apply {
+  width: 100%;
+  border-color: color-mix(in srgb, #ff8080 50%, var(--border));
+  color: #ffb0b0;
+}
+.lib-trim-apply:hover:not(:disabled) {
+  border-color: #ff8080; color: #fff;
+  background: color-mix(in srgb, #ff8080 16%, var(--surface));
+}
+.lib-trim-apply:disabled { opacity: 0.4; cursor: default; }
+
 /* Settings 패널 */
 .lib-settings { display: flex; flex-direction: column; gap: 12px; }
 .lib-settings-title {
@@ -808,7 +877,12 @@ html, body {
   color: var(--text-dim); font-size: 14px; line-height: 1;
   width: 34px; height: 34px; border-radius: var(--radius); cursor: pointer;
 }
-.lib-bar-btn:hover { color: var(--text); border-color: var(--accent); }
+.lib-bar-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.lib-bar-btn:disabled { opacity: 0.4; cursor: default; }
+.lib-bar-btn.active {
+  color: var(--text); border-color: var(--accent);
+  background: var(--accent-bg);
+}
 
 /* ── 가상 폴더 트리 (Characters) ─────────────────────────────── */
 /* 깊이에 비례한 들여쓰기 — 폴더 헤더와 자산 행 공통. */

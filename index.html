@@ -56,6 +56,7 @@
         </select>
         <button id="lib-expand-all" class="lib-bar-btn" type="button" title="Expand all folders">⊞</button>
         <button id="lib-collapse-all" class="lib-bar-btn" type="button" title="Collapse all folders">⊟</button>
+        <button id="lib-loop-toggle" class="lib-bar-btn hidden" type="button" disabled title="Loop preview playback" aria-pressed="false">🔁</button>
       </div>
 
       <div class="lib-content" id="lib-content">
@@ -170,10 +171,29 @@
               <label class="lib-field">Folder
                 <select id="audio-folder"><option value="">(No folder)</option></select>
               </label>
-              <label class="lib-field lib-field-inline">
+              <label class="lib-field lib-field-inline" title="Repeat this track when it reaches the end. The 🔁 button in the toolbar toggles the same setting and the preview player above follows it. Save to keep it as this track's default.">
                 <input id="audio-loop" type="checkbox" />
                 <span>Loop by default</span>
               </label>
+              <div class="lib-field lib-trim-field">
+                <div class="lib-trim-head">
+                  <span>Trim</span>
+                  <button id="audio-trim-reset" class="lib-trim-reset" type="button" title="Clear selection — use the whole track">Reset</button>
+                </div>
+                <div class="lib-trim-bar" id="audio-trim-bar">
+                  <div class="lib-trim-sel" id="audio-trim-sel" aria-hidden="true"></div>
+                  <div class="lib-trim-playhead" id="audio-trim-playhead" aria-hidden="true"></div>
+                  <input id="audio-trim-start" class="lib-trim-range" type="range" min="0" max="1" step="0.05" value="0" aria-label="Trim start" disabled />
+                  <input id="audio-trim-end" class="lib-trim-range" type="range" min="0" max="1" step="0.05" value="1" aria-label="Trim end" disabled />
+                </div>
+                <div class="lib-trim-row">
+                  <button id="audio-trim-set-start" class="st-btn" type="button" title="Set start to current playback position">⏱ Start</button>
+                  <span class="lib-trim-time"><span id="audio-trim-start-val">0:00.0</span> – <span id="audio-trim-end-val">0:00.0</span></span>
+                  <button id="audio-trim-set-end" class="st-btn" type="button" title="Set end to current playback position">End ⏱</button>
+                </div>
+                <button id="audio-trim-play" class="st-btn lib-trim-play" type="button" title="Preview the selected region from the start">▶ Play selection</button>
+                <button id="audio-trim-apply" class="st-btn lib-trim-apply" type="button" disabled title="Cut the file down to the selected region — replaces the original, permanent">✂ Trim &amp; save</button>
+              </div>
               <label class="lib-field">Memo
                 <textarea id="audio-memo" rows="2" placeholder="optional note"></textarea>
               </label>
