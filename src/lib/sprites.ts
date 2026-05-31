@@ -14,8 +14,9 @@ function rect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h:
 }
 
 // ===== 캐릭터 (LPC 스프라이트시트 기반) =====
-// public/sprites/characters/00.png ~ 09.png : 각 832×3456, 64×64 프레임 × 13 cols × 54 rows.
-// LPC 생성기로 미리 만들어 둔 10개의 랜덤 캐릭터 — 입장 시 한 명당 하나 배정.
+// public/sprites/characters/00.png ~ 08.png : 각 832×3456, 64×64 프레임 × 13 cols × 54 rows.
+// LPC 생성기로 미리 만들어 둔 9개의 랜덤 캐릭터 — 입장 시 한 명당 하나 배정.
+// (업로드/커스텀 캐릭터는 URL 기반으로 별도 렌더 — ensureUploadedCharacter 참고.)
 // LPC (Liberated Pixel Cup) 표준 행 배치 (이 프로젝트에서 실제로 쓰는 것만):
 //   4~7:   Thrust    (Up/Left/Down/Right) — 8 frames (현재 미사용, 호환 위해 매핑만 유지)
 //   8~11:  Walk      — 9 frames (0=idle, 1-8=walk cycle) — idle 정지 자세용
@@ -35,6 +36,12 @@ export const CHARACTER_COUNT = 9;   // public/sprites/characters/ 안의 시트 
  *  예전 modulo wraparound 는 -1 을 8(엉뚱한 캐릭터)로 매핑했음 — 에디터 import 와 일치하도록 클램프. */
 export function safeCharIdx(charIdx: number): number {
   return Number.isInteger(charIdx) && charIdx >= 0 && charIdx < CHARACTER_COUNT ? charIdx : 0;
+}
+
+/** builtin LPC 캐릭터 표시 이름. bin(빈 목록)·export(import 시 자산 재생성) 양쪽이
+ *  같은 이름을 쓰도록 여기서 중앙화. (업로드 캐릭터는 메타의 name 을 따로 씀.) */
+export function characterName(idx: number): string {
+  return `LPC ${String(idx).padStart(2, '0')}`;
 }
 
 // 기본값 — prescaleCharacter 가 호출되면 갱신됨. 캐논 LPC 비례 32×48 가까이.
@@ -69,6 +76,27 @@ tombstone.src = '/sprites/tombstone.png';
 let tombstoneReady = false;
 tombstone.onload = () => { tombstoneReady = true; };
 
+// ===== 업로드/커스텀 캐릭터 (URL 시트) =====
+// 라이브러리(Blob)에 올린 캐릭터는 builtin 인덱스가 아니라 URL 로 식별한다.
+// 임포트 시 표준 832×3456 LPC 시트로 bake 되므로 행/프레임 로직은 builtin 과 동일 —
+// prescale 캐싱 없이 64px 소스 프레임을 draw 시점에 prescaledFrame 으로 스케일한다.
+export interface UploadedChar { img: HTMLImageElement; ready: boolean; promise: Promise<void>; }
+const uploadedChars = new Map<string, UploadedChar>();
+export function ensureUploadedCharacter(url: string): UploadedChar {
+  const cached = uploadedChars.get(url);
+  if (cached) return cached;
+  const img = new Image();
+  img.crossOrigin = 'anonymous';   // Blob CDN — 향후 canvas readback 대비 taint 방지
+  const entry: UploadedChar = { img, ready: false, promise: Promise.resolve() };
+  entry.promise = new Promise<void>((resolve) => {
+    img.onload = () => { entry.ready = true; resolve(); };
+    img.onerror = () => { entry.ready = false; resolve(); };
+  });
+  img.src = url;
+  uploadedChars.set(url, entry);
+  return entry;
+}
+
 // 공격 모션을 halfslash 로 바꾼 뒤 scripts/check-halfslash.mjs 로 전체 캐릭터의
 // halfslash 프레임이 모두 정상임을 확인 — 10개 전부 사용 가능.
 export function randomCharIdx(): number {
@@ -82,18 +110,25 @@ export async function drawCharacterPreview(
   ctx: CanvasRenderingContext2D,
   charIdx: number,
   dir: Dir = 'down',
+  customUrl?: string,
 ): Promise<void> {
-  const safe = safeCharIdx(charIdx);
-  await loadPromises[safe];
-  if (!readyFlags[safe]) return;
-  const sheet = spritesheets[safe];
   const row = ROW_WALK[dir];
   const F = SOURCE_FRAME;
   const cw = ctx.canvas.width;
   const ch = ctx.canvas.height;
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, cw, ch);
-  ctx.drawImage(sheet, 0, row * F, F, F, 0, 0, cw, ch);
+  if (customUrl) {
+    const uc = ensureUploadedCharacter(customUrl);
+    await uc.promise;
+    if (!uc.ready) return;
+    ctx.drawImage(uc.img, 0, row * F, F, F, 0, 0, cw, ch);
+    return;
+  }
+  const safe = safeCharIdx(charIdx);
+  await loadPromises[safe];
+  if (!readyFlags[safe]) return;
+  ctx.drawImage(spritesheets[safe], 0, row * F, F, F, 0, 0, cw, ch);
 }
 
 // 시작 시 1회, 또는 디버그 패널 슬라이더에서 호출.
@@ -167,6 +202,7 @@ function shade(hex: string, amt: number): string {
 // charIdx = 어느 캐릭터 시트를 쓸지 (0 ~ CHARACTER_COUNT-1).
 // attackPhase: -1 = 비공격, 0~1 = 공격 진행률.
 // now: 걷기 사이클 시간 (performance.now()/1000).
+// customUrl 이 주어지면 builtin 인덱스 대신 업로드(URL) 시트로 렌더. (charIdx 는 무시됨)
 export function drawCharacter(
   ctx: CanvasRenderingContext2D,
   footX: number,
@@ -177,21 +213,9 @@ export function drawCharacter(
   attackPhase: number,
   dead: boolean,
   now: number,
+  customUrl?: string,
 ): void {
-  const safeIdx = safeCharIdx(charIdx);
-  const sheet = prescaledSheets[safeIdx];
-  if (!sheet) {
-    // 스프라이트시트/prescale 준비 전 폴백 — 회색 원
-    ctx.save();
-    ctx.fillStyle = '#888';
-    ctx.beginPath();
-    ctx.ellipse(footX, footY - 12, 4, 10, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-    return;
-  }
-
-  // 사망 시: 캐릭터 스프라이트 대신 비석을 그린다.
+  // 사망 시: 캐릭터 스프라이트 대신 비석을 그린다. (소스 종류와 무관)
   // 발 위치(footX, footY)에 비석 바닥이 오도록 — 비석을 발 위에 세움.
   if (dead) {
     if (tombstoneReady) {
@@ -209,6 +233,21 @@ export function drawCharacter(
       ctx.fill();
       ctx.restore();
     }
+    return;
+  }
+
+  // 소스 해석 — 업로드(URL) 시트 또는 builtin prescaled 시트.
+  const uploaded = customUrl ? ensureUploadedCharacter(customUrl) : null;
+  const builtinSheet = uploaded ? null : prescaledSheets[safeCharIdx(charIdx)];
+  const ready = uploaded ? uploaded.ready : !!builtinSheet;
+  if (!ready) {
+    // 시트/prescale 준비 전 폴백 — 회색 원
+    ctx.save();
+    ctx.fillStyle = '#888';
+    ctx.beginPath();
+    ctx.ellipse(footX, footY - 12, 4, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
     return;
   }
 
@@ -236,7 +275,17 @@ export function drawCharacter(
   const dx = Math.round(footX - F / 2);
   const dy = Math.round(footY - prescaledFootY) + idleBobY;
 
-  ctx.drawImage(sheet, frame * F, row * F, F, F, dx, dy, F, F);
+  if (uploaded) {
+    // 64px 소스 프레임을 prescaledFrame 으로 스케일 (nearest — 픽셀 또렷).
+    // smoothing 상태는 다른 렌더(타일 등)에 영향 없도록 복원.
+    const S = SOURCE_FRAME;
+    const prevSmoothing = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(uploaded.img, frame * S, row * S, S, S, dx, dy, F, F);
+    ctx.imageSmoothingEnabled = prevSmoothing;
+  } else {
+    ctx.drawImage(builtinSheet!, frame * F, row * F, F, F, dx, dy, F, F);
+  }
 }
 
 // 더 이상 색 구분 안 함 (이름/HP바로 구분). 댄스 모듈 호환을 위해 더미 유지.

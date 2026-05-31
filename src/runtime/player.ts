@@ -176,7 +176,8 @@ export function playCutscene(
       const samples = sc.tracks.map((trk) => ({ trk, s: sampleTrk(trk, sceneTime) }));
       samples.sort((a, b) => a.s.y - b.s.y);
       for (const { trk, s } of samples) {
-        drawCharacter(ctx, s.x - worldX, s.y - worldY, safeCharIdx(trk.charIdx), s.dir, s.walk, -1, false, nowSec);
+        // 업로드 캐릭터는 trk.charSheetUrl 로 LPC 시트를 직접 fetch 해 렌더 (charIdx 는 -1 → 무시됨).
+        drawCharacter(ctx, s.x - worldX, s.y - worldY, safeCharIdx(trk.charIdx), s.dir, s.walk, -1, false, nowSec, trk.charSheetUrl);
       }
       // 위 레이어
       for (const name of orderAbove) {

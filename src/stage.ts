@@ -322,7 +322,7 @@ function drawTracks(scene: Scene, t: number, worldX: number, worldY: number): vo
     // 카메라 상대 좌표
     const fx = s.x - worldX;
     const fy = s.y - worldY;
-    drawCharacter(ctx, fx, fy, asset.charIdx, s.dir, s.walk, -1, false, nowSec);
+    drawCharacter(ctx, fx, fy, asset.charIdx, s.dir, s.walk, -1, false, nowSec, asset.customUrl);
     // 녹화 대상은 발 밑에 빨간 링
     if (state.rt.armedTrackId === trk.id && state.rt.recording) {
       ctx.save();

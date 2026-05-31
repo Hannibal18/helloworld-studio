@@ -9,7 +9,7 @@ import type {
   TransitionType, Asset,
 } from './state';
 import { downloadJson, showToast } from './util';
-import { CHARACTER_COUNT } from './lib/sprites';
+import { CHARACTER_COUNT, characterName } from './lib/sprites';
 
 export interface ExportedScene {
   id: string;
@@ -22,7 +22,8 @@ export interface ExportedScene {
   tracks: Array<{
     id: string;
     name: string;
-    charIdx: number;                         // -1 = upload (미지원)
+    charIdx: number;                         // builtin: 0~COUNT-1, upload: -1
+    charSheetUrl?: string;                   // upload 캐릭터의 LPC 시트 URL (재생 시 fetch)
     startX: number; startY: number; startDir: CharTrack['startDir'];
     keyframes: CharTrack['keyframes'];
   }>;
@@ -55,7 +56,13 @@ function exportToFile(): void {
     const a = findAsset(sc.bgm.assetId);
     return a && a.kind === 'bgm' && a.source === 'upload';
   });
-  if (hasUploadedMap || hasUploadedBgm) {
+  const hasUploadedChar = state.project.scenes.some((sc) =>
+    sc.tracks.some((trk) => {
+      const a = findAsset(trk.charAssetId);
+      return a && a.kind === 'char' && a.source === 'upload';
+    }),
+  );
+  if (hasUploadedMap || hasUploadedBgm || hasUploadedChar) {
     showToast('Uploaded asset URLs are referenced — the same files must be reachable at playback time', 'err', 3500);
   }
   const safe = (state.project.projectName || 'cutscene').replace(/[^a-zA-Z0-9_\-\.가-힣]/g, '_');
@@ -90,11 +97,14 @@ function serializeScene(sc: Scene): ExportedScene {
     camera: { keyframes: sc.camera.keyframes.map((k) => ({ ...k })) },
     tracks: sc.tracks.map((trk) => {
       const a = findAsset(trk.charAssetId);
-      const charIdx = (a && a.kind === 'char') ? a.charIdx : -1;
+      const isChar = a && a.kind === 'char';
+      const charIdx = isChar ? a.charIdx : -1;
+      const charSheetUrl = isChar ? a.customUrl : undefined;
       return {
         id: trk.id,
         name: trk.name,
         charIdx,
+        ...(charSheetUrl ? { charSheetUrl } : {}),
         startX: trk.startX, startY: trk.startY, startDir: trk.startDir,
         keyframes: trk.keyframes.map((k) => ({ ...k })),
       };
@@ -143,7 +153,7 @@ export function importProject(json: ExportedCutscene): void {
       tracks: sc.tracks.map((trk) => ({
         id: trk.id || uid('trk'),
         name: trk.name,
-        charAssetId: resolveCharAsset(trk.charIdx),
+        charAssetId: resolveCharAsset(trk.charIdx, trk.charSheetUrl),
         startX: trk.startX, startY: trk.startY, startDir: trk.startDir,
         keyframes: trk.keyframes.map((k) => ({ ...k })),
         recorded: trk.keyframes.length > 0,
@@ -176,14 +186,24 @@ function resolveAsset(kind: 'map' | 'bgm', url: string, name: string): string {
   }
   return id;
 }
-function resolveCharAsset(charIdx: number): string {
-  // 유효한 builtin 인덱스(0..COUNT-1)만 그대로 사용. -1(업로드 미지원)·범위초과·NaN 은
-  // 조용한 wraparound(예전엔 -1 → 8 로 엉뚱한 캐릭터 렌더) 대신 0번으로 안전 폴백.
+function resolveCharAsset(charIdx: number, charSheetUrl?: string): string {
+  // 업로드 캐릭터: URL 로 식별. 같은 URL 의 빈 자산이 있으면 재사용(보통 loadLibraryAssets 가
+  // 이미 만들어 둠), 없으면(다른 머신 등) URL 만으로 upload 자산을 새로 만든다 — drawCharacter 가
+  // 그 URL 을 직접 fetch 해 렌더하므로 재생 가능.
+  if (charSheetUrl) {
+    const exist = state.assets.find((a) => a.kind === 'char' && a.customUrl === charSheetUrl);
+    if (exist) return exist.id;
+    const id = uid('a');
+    const name = charSheetUrl.split('/').pop()?.replace(/\.[^.]+$/, '') ?? 'uploaded';
+    state.assets.push({ kind: 'char', id, source: 'upload', name, charIdx: -1, customUrl: charSheetUrl });
+    return id;
+  }
+  // builtin: 유효한 인덱스(0..COUNT-1)만 그대로 사용. 범위초과·NaN 은 0번으로 안전 폴백.
   const safe = Number.isInteger(charIdx) && charIdx >= 0 && charIdx < CHARACTER_COUNT ? charIdx : 0;
-  const exist = state.assets.find((a) => a.kind === 'char' && (a as { charIdx?: number }).charIdx === safe);
+  const exist = state.assets.find((a) => a.kind === 'char' && (a as { charIdx?: number }).charIdx === safe && !a.customUrl);
   if (exist) return exist.id;
   const id = uid('a');
-  state.assets.push({ kind: 'char', id, source: 'builtin', name: `LPC ${String(safe).padStart(2, '0')}`, charIdx: safe });
+  state.assets.push({ kind: 'char', id, source: 'builtin', name: characterName(safe), charIdx: safe });
   return id;
 }
 

@@ -3,7 +3,11 @@
 
 import { state, notify, uid, activeScene } from './state';
 import type { Asset, AssetKind } from './state';
-import { CHARACTER_COUNT, drawCharacterPreview } from './lib/sprites';
+import { CHARACTER_COUNT, characterName, drawCharacterPreview } from './lib/sprites';
+import { isCharacterEntryPath, charBaseName, metaUrlForEntry, generateAssetId } from './library/paths';
+import { uploadAsset } from './library/api';
+import { parseCharZip, revokeParsed } from './char-import/tiled';
+import { openCharImportEditor } from './char-import/editor';
 import { showToast } from './util';
 import { currentMap } from './stage';
 
@@ -28,7 +32,7 @@ export function loadBuiltinAssets(): void {
   for (let i = 0; i < CHARACTER_COUNT; i++) {
     state.assets.push({
       kind: 'char', id: uid('a'), source: 'builtin',
-      name: `LPC ${String(i).padStart(2, '0')}`, charIdx: i,
+      name: characterName(i), charIdx: i,
     });
   }
   for (const b of BUILTIN_BGM) {
@@ -50,7 +54,7 @@ export async function loadLibraryAssets(): Promise<void> {
     });
     if (!r.ok) return;
     const j = (await r.json()) as { blobs: Array<{ pathname: string; url: string }> };
-    let mapCount = 0, bgmCount = 0;
+    let mapCount = 0, bgmCount = 0, charCount = 0;
     for (const b of j.blobs) {
       const ext = b.pathname.split('.').pop()?.toLowerCase() ?? '';
       const baseName = b.pathname.split('/').slice(1).join('/').replace(/\.[^.]+$/, '');
@@ -60,11 +64,24 @@ export async function loadLibraryAssets(): Promise<void> {
       } else if (['mp3', 'ogg', 'wav', 'm4a'].includes(ext) && b.pathname.startsWith('bgm/')) {
         state.assets.push({ kind: 'bgm', id: uid('a'), source: 'upload', name: baseName, url: b.url });
         bgmCount++;
+      } else if (isCharacterEntryPath(b.pathname) && b.pathname.split('/').length === 2 && ext === 'png') {
+        // single-PNG 캐릭터(characters/Foo.png) — bake 된 LPC 시트. (zip 폴더형은 추후)
+        let name = charBaseName(b.pathname);
+        try {
+          const mr = await fetch(metaUrlForEntry(b.url, b.pathname), { cache: 'no-store' });
+          if (mr.ok) { const meta = await mr.json() as { name?: string }; if (meta.name) name = meta.name; }
+        } catch { /* 메타 없으면 base 이름 사용 */ }
+        // 중복 가드: 오토세이브 복원(resolveCharAsset)이 같은 URL 로 먼저 만든 자산이 있으면
+        // 새로 push 하지 말고 표시 이름만 meta 기준으로 보정한다 (슬러그→실제 이름).
+        const existing = state.assets.find((a) => a.kind === 'char' && a.customUrl === b.url);
+        if (existing) { existing.name = name; continue; }
+        state.assets.push({ kind: 'char', id: uid('a'), source: 'upload', name, charIdx: -1, customUrl: b.url });
+        charCount++;
       }
-      // .tsj/.png 등 보조 파일은 빈에 노출 X — map JSON 이 내부적으로 fetch.
+      // .tsj/.png(보조)·meta.json 등은 빈에 노출 X — map JSON 이 내부적으로 fetch.
     }
-    if (mapCount + bgmCount > 0) {
-      showToast(`Library loaded — ${mapCount} maps, ${bgmCount} audio`);
+    if (mapCount + bgmCount + charCount > 0) {
+      showToast(`Library loaded — ${mapCount} maps, ${charCount} chars, ${bgmCount} audio`);
     }
     notify();
   } catch (e) {
@@ -88,7 +105,7 @@ export function initBinUI(): void {
   uploadBtn.addEventListener('click', () => {
     const tab = state.rt.binTab;
     fileIn.accept = tab === 'maps' ? 'application/json,.json,.tmj'
-      : tab === 'chars' ? 'image/png,.png'
+      : tab === 'chars' ? 'image/png,.png,application/zip,.zip'
       : 'audio/mpeg,audio/*,.mp3,.ogg,.wav';
     fileIn.click();
   });
@@ -104,20 +121,89 @@ export function initBinUI(): void {
 }
 
 function addUploaded(tab: 'maps' | 'chars' | 'bgm', file: File): void {
+  if (tab === 'chars') { void handleCharUpload(file); return; }
   const url = URL.createObjectURL(file);
   const name = file.name.replace(/\.[^.]+$/, '');
   if (tab === 'maps') {
     state.assets.push({ kind: 'map', id: uid('a'), source: 'upload', name, url });
-  } else if (tab === 'chars') {
-    // 업로드 캐릭터는 charIdx=-1 + customUrl 로 저장. 추후 sprite 모듈에서 별도 처리 필요.
-    // 현 MVP 에선 미지원 — 안내만.
-    showToast('Custom character upload not yet supported — use built-in LPC sheets', 'err', 2500);
-    URL.revokeObjectURL(url);
-    return;
   } else {
     state.assets.push({ kind: 'bgm', id: uid('a'), source: 'upload', name, url });
   }
   notify();
+}
+
+// 캐릭터 업로드 라우팅:
+//   .zip  → 비-LPC 임포트(매핑 에디터 → LPC bake → Blob 업로드)
+//   .png  → 832×3456 표준 LPC 시트면 바로 Blob 업로드, 아니면 안내
+async function handleCharUpload(file: File): Promise<void> {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith('.zip')) { await importNonLpcCharacter(file); return; }
+  if (lower.endsWith('.png')) {
+    if (await pngIsStandardLpc(file)) {
+      await uploadCharacter(file, file.name.replace(/\.[^.]+$/, ''));
+    } else {
+      showToast('단일 PNG는 832×3456 LPC 시트만 지원해요. 비-LPC 동물은 PNG+JSON 을 zip 으로 올려주세요.', 'err', 4500);
+    }
+    return;
+  }
+  showToast('지원 형식: .zip(PNG+Tiled JSON) 또는 832×3456 LPC .png', 'err', 3500);
+}
+
+function pngIsStandardLpc(file: File): Promise<boolean> {
+  return new Promise((resolve) => {
+    const u = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { const ok = img.naturalWidth === 832 && img.naturalHeight === 3456; URL.revokeObjectURL(u); resolve(ok); };
+    img.onerror = () => { URL.revokeObjectURL(u); resolve(false); };
+    img.src = u;
+  });
+}
+
+// 비-LPC zip → 매핑 에디터 → bake → 업로드.
+async function importNonLpcCharacter(file: File): Promise<void> {
+  let parsed;
+  try { parsed = await parseCharZip(file); }
+  catch (e) { showToast(`zip 파싱 실패: ${(e as Error).message}`, 'err', 4500); return; }
+  if (parsed.isLpcStandard) {
+    // 이미 표준 LPC 시트 한 장 → 에디터 없이 바로 업로드
+    await uploadCharacter(parsed.sheets[0].pngFile, parsed.sheets[0].name);
+    revokeParsed(parsed);
+    return;
+  }
+  openCharImportEditor(parsed, (result) => {
+    void (async () => {
+      if (result) await uploadCharacter(result.blob, result.name);
+      revokeParsed(parsed);
+    })();
+  });
+}
+
+// baked LPC PNG + meta 를 라이브러리(Blob)에 업로드하고 빈에 즉시 추가.
+async function uploadCharacter(png: Blob, displayName: string): Promise<void> {
+  let token: string | null;
+  try { token = localStorage.getItem('studio:library:token'); } catch { token = null; }
+  if (!token) {
+    showToast('라이브러리에 연결돼 있지 않아요 — 📚 라이브러리에서 먼저 로그인하세요', 'err', 4500);
+    return;
+  }
+  const base = generateAssetId(displayName, 'char');   // slug-안전 + 랜덤 hex → 이름 충돌 방지
+  showToast('캐릭터 업로드 중…');
+  try {
+    // meta 를 먼저 올린다 — PNG 업로드가 실패해도 "고아 meta"는 빈에 안 뜨므로(엔트리는 .png 기준)
+    // 해가 없다. 반대 순서면 PNG 만 남아 다음 부팅 때 슬러그 이름으로 잘못 표시됨.
+    const meta = {
+      schema: 1, source: 'custom-bake', format: 'single',
+      body: 'none', name: displayName, actions: ['walk', 'run'],
+      detectedAt: new Date().toISOString(),
+    };
+    await uploadAsset(token, 'characters', new File([JSON.stringify(meta, null, 2)], `${base}.meta.json`, { type: 'application/json' }));
+    const res = await uploadAsset(token, 'characters', new File([png], `${base}.png`, { type: 'image/png' }));
+    state.assets.push({ kind: 'char', id: uid('a'), source: 'upload', name: displayName, charIdx: -1, customUrl: res.url });
+    notify();
+    showToast(`캐릭터 추가됨 — ${displayName}`);
+  } catch (e) {
+    showToast(`업로드 실패: ${(e as Error).message}`, 'err', 4500);
+  }
 }
 
 // 빈 리스트 다시 그리기 — main 의 구독에서 호출.
@@ -151,7 +237,7 @@ function makeBinRow(asset: Asset): HTMLElement {
     const c = document.createElement('canvas');
     c.width = 32; c.height = 32;
     const cx = c.getContext('2d')!;
-    void drawCharacterPreview(cx, asset.charIdx);
+    void drawCharacterPreview(cx, asset.charIdx, 'down', asset.customUrl);
     thumb.appendChild(c);
   } else if (asset.kind === 'map') {
     thumb.textContent = 'MAP';
